@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: nexora_admin
-      POSTGRES_PASSWORD: changeme123
+      POSTGRES_PASSWORD: nexora_password
       POSTGRES_DB: nexora
     ports:
       - "5432:5432"

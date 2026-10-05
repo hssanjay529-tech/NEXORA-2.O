@@ -1,1645 +1,1374 @@
 """
-NEXORA Database Seeding Script
-==============================
-Connects to local PostgreSQL (localhost:5432) and seeds realistic data for:
+NEXORA Multi-Tenant Database Architecture — Database Seeding Script
+===================================================================
+Connects to local PostgreSQL (localhost:5432) and seeds realistic dummy data:
 - 2 Colleges (Tenants)
-- 2 Admins (1 per college)
-- 10 Faculty Members (5 per college across various departments)
-- 50 Students (25 per college across various programmes and departments)
-- Full relational ecosystem: Academic Years, Terms, Departments, Programmes,
-  Courses, Offerings, Rooms, Timetables, Enrollments, Attendance, Assignments,
-  Grading Scales, Grade Records, Term Results, Fee Structures, Fee Records,
-  Payments, Exams, Scholarships, Grievances, Flags, and Notifications.
-
-Usage:
-    python seed_db.py [--clean] [--database-url DATABASE_URL]
+- 2 Admins (1 per College)
+- 10 Faculty members across departments
+- 50 Students across departments and programmes
+- Full relational hierarchy (Courses, Offerings, Enrollments, Timetable,
+  Attendance, Assignments, Grades, Fees, Exams, Files, and Governance)
 """
 
 import os
 import sys
 import uuid
 import random
+import logging
 import argparse
 from datetime import datetime, date, time, timedelta, timezone
-from decimal import Decimal
 
-import bcrypt
-from faker import Faker
-
-from sqlalchemy import (
-    create_engine,
-    text,
-    ForeignKey,
-    UniqueConstraint,
-    CheckConstraint,
-    String,
-    Integer,
-    Numeric,
-    Boolean,
-    Date,
-    Time,
-    DateTime,
-    Text,
-)
-from sqlalchemy.dialects.postgresql import UUID, JSONB, CITEXT
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-    relationship,
-    sessionmaker,
-)
-
-fake = Faker("en_IN")
-Faker.seed(42)
-random.seed(42)
-
-DEFAULT_DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+psycopg2://nexora_admin:changeme123@localhost:5432/nexora",
-)
-
-# Standard password for all seeded demo users
-DEFAULT_PASSWORD = "Password123!"
-PASSWORD_HASH = bcrypt.hashpw(DEFAULT_PASSWORD.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
-# ==============================================================================
-# SQLAlchemy Models
-# ==============================================================================
-class Base(DeclarativeBase):
+# -----------------------------------------------------------------------------
+# 0. Pure-Python Compatibility Fallback Hook (for Windows / Python 3.14 environments)
+# -----------------------------------------------------------------------------
+try:
+    import importlib.util
+    class _ForcePyLoader:
+        @classmethod
+        def find_spec(cls, fullname, path=None, target=None):
+            if path:
+                for p in path:
+                    mod_name = fullname.split('.')[-1]
+                    py_file = os.path.join(p, mod_name + '.py')
+                    if os.path.isfile(py_file):
+                        return importlib.util.spec_from_file_location(fullname, py_file)
+            return None
+    sys.meta_path.insert(0, _ForcePyLoader)
+except Exception:
     pass
 
+import sqlalchemy
+from sqlalchemy import (
+    create_engine, Column, String, Integer, Numeric, Boolean, Date, Time,
+    DateTime, ForeignKey, Text, JSON, text
+)
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger("seed_db")
+
+Base = declarative_base()
+
+# =============================================================================
+# 1. SQLAlchemy ORM Models
+# =============================================================================
 
 class Tenant(Base):
-    __tablename__ = "tenants"
+    __tablename__ = 'tenants'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug = Column(Text, unique=True, nullable=False)
+    name = Column(Text, nullable=False)
+    status = Column(Text, nullable=False, default='ACTIVE')
+    settings = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="ACTIVE")
-    settings: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
+    departments = relationship("Department", back_populates="tenant", cascade="all, delete-orphan")
 
 
 class PlatformOperator(Base):
-    __tablename__ = "platform_operators"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="ACTIVE")
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    __tablename__ = 'platform_operators'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String, unique=True, nullable=False)
+    password_hash = Column(Text, nullable=False)
+    status = Column(Text, nullable=False, default='ACTIVE')
+    last_login_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class User(Base):
-    __tablename__ = "users"
+    __tablename__ = 'users'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    role = Column(Text, nullable=False)  # 'ADMIN', 'FACULTY', 'STUDENT'
+    email = Column(String, nullable=False)
+    first_name = Column(Text, nullable=False)
+    last_name = Column(Text, nullable=False)
+    avatar_url = Column(Text)
+    password_hash = Column(Text, nullable=False)
+    status = Column(Text, nullable=False, default='ACTIVE')
+    last_login_at = Column(DateTime(timezone=True))
+    failed_login_count = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime(timezone=True))
+    deleted_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    role: Mapped[str] = mapped_column(Text, nullable=False)  # ADMIN, FACULTY, STUDENT
-    email: Mapped[str] = mapped_column(CITEXT, nullable=False)
-    first_name: Mapped[str] = mapped_column(Text, nullable=False)
-    last_name: Mapped[str] = mapped_column(Text, nullable=False)
-    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="ACTIVE")
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    tenant = relationship("Tenant", back_populates="users")
+    faculty_profile = relationship("Faculty", back_populates="user", uselist=False)
+    student_profile = relationship("Student", back_populates="user", uselist=False)
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),
-        UniqueConstraint("tenant_id", "id", name="uq_users_tenant_id"),
-    )
+
+class File(Base):
+    __tablename__ = 'files'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'))
+    storage_key = Column(Text, nullable=False)
+    filename = Column(Text, nullable=False)
+    mime_type = Column(Text, nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    sha256 = Column(Text)
+    kind = Column(Text)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Department(Base):
-    __tablename__ = "departments"
+    __tablename__ = 'departments'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    name = Column(Text, nullable=False)
+    code = Column(Text, nullable=False)
+    head_faculty_id = Column(UUID(as_uuid=True), ForeignKey('faculty.id', ondelete='SET NULL'))
+    budget = Column(Numeric(12, 2), default=0.00)
+    established_on = Column(Date)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    code: Mapped[str] = mapped_column(Text, nullable=False)
-    head_faculty_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    budget: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
-    established_on: Mapped[date | None] = mapped_column(Date, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_departments_tenant_name"),
-        UniqueConstraint("tenant_id", "code", name="uq_departments_tenant_code"),
-        UniqueConstraint("tenant_id", "id", name="uq_departments_tenant_id"),
-    )
+    tenant = relationship("Tenant", back_populates="departments")
+    faculty_members = relationship("Faculty", back_populates="department", foreign_keys="Faculty.department_id")
+    programmes = relationship("Programme", back_populates="department")
 
 
 class Faculty(Base):
-    __tablename__ = "faculty"
+    __tablename__ = 'faculty'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    department_id = Column(UUID(as_uuid=True), ForeignKey('departments.id', ondelete='RESTRICT'), nullable=False)
+    employee_no = Column(Text, nullable=False)
+    designation = Column(Text, nullable=False)
+    deleted_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    department_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False)
-    employee_no: Mapped[str] = mapped_column(Text, nullable=False)
-    designation: Mapped[str] = mapped_column(Text, nullable=False)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "user_id", name="uq_faculty_tenant_user"),
-        UniqueConstraint("tenant_id", "employee_no", name="uq_faculty_tenant_empno"),
-        UniqueConstraint("tenant_id", "id", name="uq_faculty_tenant_id"),
-    )
+    user = relationship("User", back_populates="faculty_profile")
+    department = relationship("Department", back_populates="faculty_members", foreign_keys=[department_id])
 
 
 class Programme(Base):
-    __tablename__ = "programmes"
+    __tablename__ = 'programmes'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    department_id = Column(UUID(as_uuid=True), ForeignKey('departments.id', ondelete='RESTRICT'), nullable=False)
+    name = Column(Text, nullable=False)
+    code = Column(Text, nullable=False)
+    duration_terms = Column(Integer, default=8, nullable=False)
+    degree_level = Column(Text, nullable=False)  # UNDERGRADUATE, POSTGRADUATE, DIPLOMA, DOCTORAL
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    department_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    code: Mapped[str] = mapped_column(Text, nullable=False)
-    duration_terms: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
-    degree_level: Mapped[str] = mapped_column(Text, nullable=False)  # UNDERGRADUATE, POSTGRADUATE, DIPLOMA, DOCTORATE
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_programmes_tenant_name"),
-        UniqueConstraint("tenant_id", "code", name="uq_programmes_tenant_code"),
-        UniqueConstraint("tenant_id", "id", name="uq_programmes_tenant_id"),
-    )
+    department = relationship("Department", back_populates="programmes")
+    students = relationship("Student", back_populates="programme")
 
 
 class Student(Base):
-    __tablename__ = "students"
+    __tablename__ = 'students'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    programme_id = Column(UUID(as_uuid=True), ForeignKey('programmes.id', ondelete='RESTRICT'), nullable=False)
+    roll_no = Column(Text, nullable=False)
+    admission_year = Column(Integer, nullable=False)
+    current_term_no = Column(Integer, default=1, nullable=False)
+    status = Column(Text, default='ACTIVE', nullable=False)  # ACTIVE, SUSPENDED, ALUMNI, DROPPED
+    deleted_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    programme_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("programmes.id", ondelete="RESTRICT"), nullable=False)
-    roll_no: Mapped[str] = mapped_column(Text, nullable=False)
-    admission_year: Mapped[int] = mapped_column(Integer, nullable=False)
-    current_term_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="ACTIVE")
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "user_id", name="uq_students_tenant_user"),
-        UniqueConstraint("tenant_id", "roll_no", name="uq_students_tenant_rollno"),
-        UniqueConstraint("tenant_id", "id", name="uq_students_tenant_id"),
-    )
+    user = relationship("User", back_populates="student_profile")
+    programme = relationship("Programme", back_populates="students")
 
 
 class AcademicYear(Base):
-    __tablename__ = "academic_years"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    label: Mapped[str] = mapped_column(Text, nullable=False)
-    start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="PUBLISHED")
-    published_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "label", name="uq_academic_years_tenant_label"),
-        UniqueConstraint("tenant_id", "id", name="uq_academic_years_tenant_id"),
-    )
+    __tablename__ = 'academic_years'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    label = Column(Text, nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    status = Column(Text, default='DRAFT', nullable=False)
+    published_by = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'))
+    published_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Term(Base):
-    __tablename__ = "terms"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    academic_year_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("academic_years.id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    term_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
-    enrolment_opens_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    enrolment_closes_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "academic_year_id", "term_no", name="uq_terms_tenant_ay_term"),
-        UniqueConstraint("tenant_id", "id", name="uq_terms_tenant_id"),
-    )
-
-
-class Course(Base):
-    __tablename__ = "courses"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    department_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False)
-    course_code: Mapped[str] = mapped_column(Text, nullable=False)
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    credits: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
-    syllabus_file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="ACTIVE")
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "course_code", name="uq_courses_tenant_course_code"),
-        UniqueConstraint("tenant_id", "id", name="uq_courses_tenant_id"),
-    )
-
-
-class ProgrammeCourse(Base):
-    __tablename__ = "programme_courses"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    programme_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("programmes.id", ondelete="CASCADE"), nullable=False)
-    course_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
-    term_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    is_mandatory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "programme_id", "course_id", name="uq_programme_courses_tenant_prog_course"),
-        UniqueConstraint("tenant_id", "id", name="uq_programme_courses_tenant_id"),
-    )
+    __tablename__ = 'terms'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    academic_year_id = Column(UUID(as_uuid=True), ForeignKey('academic_years.id', ondelete='CASCADE'), nullable=False)
+    name = Column(Text, nullable=False)
+    term_no = Column(Integer, nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    enrolment_opens_at = Column(DateTime(timezone=True))
+    enrolment_closes_at = Column(DateTime(timezone=True))
+    is_current = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Room(Base):
-    __tablename__ = "rooms"
+    __tablename__ = 'rooms'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    code = Column(Text, nullable=False)
+    room_type = Column(Text, nullable=False)  # CLASSROOM, LAB, SEMINAR_HALL, AUDITORIUM
+    capacity = Column(Integer, default=60, nullable=False)
+    building = Column(Text, nullable=False)
+    floor = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    code: Mapped[str] = mapped_column(Text, nullable=False)
-    room_type: Mapped[str] = mapped_column(Text, nullable=False, default="CLASSROOM")  # CLASSROOM, LAB, SEMINAR_HALL, AUDITORIUM
-    capacity: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
-    building: Mapped[str] = mapped_column(Text, nullable=False)
-    floor: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "code", name="uq_rooms_tenant_code"),
-        UniqueConstraint("tenant_id", "id", name="uq_rooms_tenant_id"),
-    )
+class Course(Base):
+    __tablename__ = 'courses'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    department_id = Column(UUID(as_uuid=True), ForeignKey('departments.id', ondelete='RESTRICT'), nullable=False)
+    course_code = Column(Text, nullable=False)
+    title = Column(Text, nullable=False)
+    description = Column(Text)
+    credits = Column(Integer, default=3, nullable=False)
+    syllabus_file_id = Column(UUID(as_uuid=True), ForeignKey('files.id', ondelete='SET NULL'))
+    status = Column(Text, default='ACTIVE', nullable=False)
+    deleted_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class ProgrammeCourse(Base):
+    __tablename__ = 'programme_courses'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    programme_id = Column(UUID(as_uuid=True), ForeignKey('programmes.id', ondelete='CASCADE'), nullable=False)
+    course_id = Column(UUID(as_uuid=True), ForeignKey('courses.id', ondelete='CASCADE'), nullable=False)
+    term_no = Column(Integer, nullable=False)
+    is_mandatory = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class CourseOffering(Base):
-    __tablename__ = "course_offerings"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    course_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
-    term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("terms.id", ondelete="CASCADE"), nullable=False)
-    faculty_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("faculty.id", ondelete="RESTRICT"), nullable=False)
-    section: Mapped[str] = mapped_column(Text, nullable=False, default="A")
-    capacity: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="ACTIVE")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "course_id", "term_id", "section", name="uq_course_offerings_tenant_combo"),
-        UniqueConstraint("tenant_id", "id", name="uq_course_offerings_tenant_id"),
-    )
-
-
-class TimetableSlot(Base):
-    __tablename__ = "timetable_slots"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    offering_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("course_offerings.id", ondelete="CASCADE"), nullable=False)
-    room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.id", ondelete="RESTRICT"), nullable=False)
-    faculty_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("faculty.id", ondelete="RESTRICT"), nullable=False)
-    day_of_week: Mapped[str] = mapped_column(Text, nullable=False)  # MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY
-    start_time: Mapped[time] = mapped_column(Time, nullable=False)
-    end_time: Mapped[time] = mapped_column(Time, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_timetable_slots_tenant_id"),
-    )
+    __tablename__ = 'course_offerings'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    course_id = Column(UUID(as_uuid=True), ForeignKey('courses.id', ondelete='CASCADE'), nullable=False)
+    term_id = Column(UUID(as_uuid=True), ForeignKey('terms.id', ondelete='CASCADE'), nullable=False)
+    faculty_id = Column(UUID(as_uuid=True), ForeignKey('faculty.id', ondelete='RESTRICT'), nullable=False)
+    section = Column(Text, default='A', nullable=False)
+    capacity = Column(Integer, default=60, nullable=False)
+    status = Column(Text, default='ACTIVE', nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Enrollment(Base):
-    __tablename__ = "enrollments"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    offering_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("course_offerings.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="ENROLLED")  # ENROLLED, DROPPED, COMPLETED
-    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "offering_id", "student_id", name="uq_enrollments_tenant_offering_student"),
-        UniqueConstraint("tenant_id", "id", name="uq_enrollments_tenant_id"),
-    )
+    __tablename__ = 'enrollments'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    offering_id = Column(UUID(as_uuid=True), ForeignKey('course_offerings.id', ondelete='CASCADE'), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    status = Column(Text, default='ENROLLED', nullable=False)  # ENROLLED, DROPPED, COMPLETED
+    enrolled_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
-class GradingScale(Base):
-    __tablename__ = "grading_scales"
+class CourseMaterial(Base):
+    __tablename__ = 'course_materials'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    offering_id = Column(UUID(as_uuid=True), ForeignKey('course_offerings.id', ondelete='CASCADE'), nullable=False)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('files.id', ondelete='CASCADE'), nullable=False)
+    title = Column(Text, nullable=False)
+    description = Column(Text)
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    grade: Mapped[str] = mapped_column(Text, nullable=False)
-    min_marks: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
-    max_marks: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
-    grade_points: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "grade", name="uq_grading_scales_tenant_grade"),
-        UniqueConstraint("tenant_id", "id", name="uq_grading_scales_tenant_id"),
-    )
+class TimetableSlot(Base):
+    __tablename__ = 'timetable_slots'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    offering_id = Column(UUID(as_uuid=True), ForeignKey('course_offerings.id', ondelete='CASCADE'), nullable=False)
+    room_id = Column(UUID(as_uuid=True), ForeignKey('rooms.id', ondelete='RESTRICT'), nullable=False)
+    faculty_id = Column(UUID(as_uuid=True), ForeignKey('faculty.id', ondelete='RESTRICT'), nullable=False)
+    day_of_week = Column(Text, nullable=False)  # MONDAY, TUESDAY...
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Attendance(Base):
-    __tablename__ = "attendance"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    offering_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("course_offerings.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    att_date: Mapped[date] = mapped_column(Date, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="PRESENT")  # PRESENT, ABSENT, LATE, EXCUSED
-    marked_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("faculty.id", ondelete="RESTRICT"), nullable=False)
-    remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "offering_id", "student_id", "att_date", name="uq_attendance_tenant_day"),
-        UniqueConstraint("tenant_id", "id", name="uq_attendance_tenant_id"),
-    )
+    __tablename__ = 'attendance'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    offering_id = Column(UUID(as_uuid=True), ForeignKey('course_offerings.id', ondelete='CASCADE'), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    att_date = Column(Date, nullable=False)
+    status = Column(Text, nullable=False)  # PRESENT, ABSENT, LATE, EXCUSED
+    marked_by = Column(UUID(as_uuid=True), ForeignKey('faculty.id', ondelete='SET NULL'))
+    remarks = Column(Text)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Assignment(Base):
-    __tablename__ = "assignments"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    offering_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("course_offerings.id", ondelete="CASCADE"), nullable=False)
-    kind: Mapped[str] = mapped_column(Text, nullable=False, default="ASSIGNMENT")  # ASSIGNMENT, QUIZ
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    max_marks: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False, default=100.0)
-    rubric_file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="PUBLISHED")
-    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("faculty.id", ondelete="RESTRICT"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_assignments_tenant_id"),
-    )
-
-
-class QuizQuestion(Base):
-    __tablename__ = "quiz_questions"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    assignment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
-    question_text: Mapped[str] = mapped_column(Text, nullable=False)
-    options: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    correct_answer: Mapped[str] = mapped_column(Text, nullable=False)
-    marks: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=5.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_quiz_questions_tenant_id"),
-    )
+    __tablename__ = 'assignments'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    offering_id = Column(UUID(as_uuid=True), ForeignKey('course_offerings.id', ondelete='CASCADE'), nullable=False)
+    kind = Column(Text, nullable=False)  # ASSIGNMENT, QUIZ
+    title = Column(Text, nullable=False)
+    description = Column(Text)
+    due_at = Column(DateTime(timezone=True), nullable=False)
+    max_marks = Column(Numeric(5, 2), default=100.00, nullable=False)
+    rubric_file_id = Column(UUID(as_uuid=True), ForeignKey('files.id', ondelete='SET NULL'))
+    status = Column(Text, default='PUBLISHED', nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class AssignmentSubmission(Base):
-    __tablename__ = "assignment_submissions"
+    __tablename__ = 'assignment_submissions'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    assignment_id = Column(UUID(as_uuid=True), ForeignKey('assignments.id', ondelete='CASCADE'), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    file_id = Column(UUID(as_uuid=True), ForeignKey('files.id', ondelete='SET NULL'))
+    answers = Column(JSONB, default=dict)
+    submitted_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    marks = Column(Numeric(5, 2))
+    feedback = Column(Text)
+    graded_by = Column(UUID(as_uuid=True), ForeignKey('faculty.id', ondelete='SET NULL'))
+    status = Column(Text, default='SUBMITTED', nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    assignment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    answers: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    marks: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
-    feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
-    graded_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("faculty.id", ondelete="SET NULL"), nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="GRADED")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "assignment_id", "student_id", name="uq_assignment_submissions_tenant_assign_stu"),
-        UniqueConstraint("tenant_id", "id", name="uq_assignment_submissions_tenant_id"),
-    )
+class GradingScale(Base):
+    __tablename__ = 'grading_scales'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    grade = Column(Text, nullable=False)
+    min_marks = Column(Numeric(5, 2), nullable=False)
+    max_marks = Column(Numeric(5, 2), nullable=False)
+    grade_points = Column(Numeric(4, 2), nullable=False)
+    description = Column(Text)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class GradeRecord(Base):
-    __tablename__ = "grade_records"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    offering_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("course_offerings.id", ondelete="CASCADE"), nullable=False)
-    internal_marks: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
-    final_marks: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
-    grade: Mapped[str] = mapped_column(Text, nullable=False)
-    grade_points: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="COMPLETED")
-    submitted_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("faculty.id", ondelete="RESTRICT"), nullable=False)
-    approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "student_id", "offering_id", name="uq_grade_records_tenant_student_offering"),
-        UniqueConstraint("tenant_id", "id", name="uq_grade_records_tenant_id"),
-    )
+    __tablename__ = 'grade_records'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    offering_id = Column(UUID(as_uuid=True), ForeignKey('course_offerings.id', ondelete='CASCADE'), nullable=False)
+    internal_marks = Column(Numeric(5, 2), default=0.00)
+    final_marks = Column(Numeric(5, 2), default=0.00)
+    # total_marks is GENERATED STORED in postgres
+    grade = Column(Text)
+    grade_points = Column(Numeric(4, 2))
+    status = Column(Text, default='DRAFT', nullable=False)
+    submitted_by = Column(UUID(as_uuid=True), ForeignKey('faculty.id', ondelete='SET NULL'))
+    approved_by = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'))
+    published_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class StudentTermResult(Base):
-    __tablename__ = "student_term_results"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("terms.id", ondelete="CASCADE"), nullable=False)
-    sgpa: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
-    cgpa: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False)
-    credits_earned: Mapped[int] = mapped_column(Integer, nullable=False)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "student_id", "term_id", name="uq_student_term_results_tenant_student_term"),
-        UniqueConstraint("tenant_id", "id", name="uq_student_term_results_tenant_id"),
-    )
+    __tablename__ = 'student_term_results'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    term_id = Column(UUID(as_uuid=True), ForeignKey('terms.id', ondelete='CASCADE'), nullable=False)
+    sgpa = Column(Numeric(4, 2), nullable=False)
+    cgpa = Column(Numeric(4, 2), nullable=False)
+    credits_earned = Column(Integer, default=0, nullable=False)
+    published_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FeeStructure(Base):
-    __tablename__ = "fee_structures"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    programme_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("programmes.id", ondelete="CASCADE"), nullable=False)
-    term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("terms.id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    due_date: Mapped[date] = mapped_column(Date, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_fee_structures_tenant_id"),
-    )
+    __tablename__ = 'fee_structures'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    programme_id = Column(UUID(as_uuid=True), ForeignKey('programmes.id', ondelete='CASCADE'), nullable=False)
+    term_id = Column(UUID(as_uuid=True), ForeignKey('terms.id', ondelete='CASCADE'), nullable=False)
+    name = Column(Text, nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    due_date = Column(Date, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FeeRecord(Base):
-    __tablename__ = "fee_records"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    fee_structure_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("fee_structures.id", ondelete="RESTRICT"), nullable=False)
-    amount_due: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    discount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0.0)
-    due_date: Mapped[date] = mapped_column(Date, nullable=False)
-    paid_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="PAID")  # PENDING, PAID, OVERDUE, PARTIAL, CANCELLED
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_fee_records_tenant_id"),
-    )
+    __tablename__ = 'fee_records'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    fee_structure_id = Column(UUID(as_uuid=True), ForeignKey('fee_structures.id', ondelete='CASCADE'), nullable=False)
+    amount_due = Column(Numeric(12, 2), nullable=False)
+    discount = Column(Numeric(12, 2), default=0.00, nullable=False)
+    due_date = Column(Date, nullable=False)
+    paid_date = Column(Date)
+    status = Column(Text, default='PENDING', nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Payment(Base):
-    __tablename__ = "payments"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    fee_record_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("fee_records.id", ondelete="CASCADE"), nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    method: Mapped[str] = mapped_column(Text, nullable=False, default="UPI")  # CARD, UPI, NET_BANKING, CASH, CHEQUE, BANK_TRANSFER
-    gateway_ref: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="VERIFIED")  # INITIATED, VERIFIED, FAILED, REFUNDED
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    receipt_file_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "gateway_ref", name="uq_payments_tenant_gateway_ref"),
-        UniqueConstraint("tenant_id", "id", name="uq_payments_tenant_id"),
-    )
-
-
-class Scholarship(Base):
-    __tablename__ = "scholarships"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    kind: Mapped[str] = mapped_column(Text, nullable=False, default="PERCENT")  # PERCENT, FIXED
-    value: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
-    criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "name", name="uq_scholarships_tenant_name"),
-        UniqueConstraint("tenant_id", "id", name="uq_scholarships_tenant_id"),
-    )
-
-
-class StudentScholarship(Base):
-    __tablename__ = "student_scholarships"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    scholarship_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("scholarships.id", ondelete="CASCADE"), nullable=False)
-    term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("terms.id", ondelete="CASCADE"), nullable=False)
-    awarded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "student_id", "scholarship_id", "term_id", name="uq_student_scholarships_tenant_combo"),
-        UniqueConstraint("tenant_id", "id", name="uq_student_scholarships_tenant_id"),
-    )
+    __tablename__ = 'payments'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    fee_record_id = Column(UUID(as_uuid=True), ForeignKey('fee_records.id', ondelete='CASCADE'), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    method = Column(Text, nullable=False)  # CARD, UPI, NET_BANKING, CASH...
+    gateway_ref = Column(Text, nullable=False)
+    status = Column(Text, default='INITIATED', nullable=False)
+    verified_at = Column(DateTime(timezone=True))
+    receipt_file_id = Column(UUID(as_uuid=True), ForeignKey('files.id', ondelete='SET NULL'))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Exam(Base):
-    __tablename__ = "exams"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("terms.id", ondelete="CASCADE"), nullable=False)
-    offering_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("course_offerings.id", ondelete="CASCADE"), nullable=False)
-    exam_type: Mapped[str] = mapped_column(Text, nullable=False, default="FINAL")  # MID_TERM, FINAL, LAB, RE_EXAM
-    exam_date: Mapped[date] = mapped_column(Date, nullable=False)
-    start_time: Mapped[time] = mapped_column(Time, nullable=False)
-    end_time: Mapped[time] = mapped_column(Time, nullable=False)
-    room_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.id", ondelete="SET NULL"), nullable=True)
-    max_marks: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False, default=100.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_exams_tenant_id"),
-    )
-
-
-class ExamEligibilityRule(Base):
-    __tablename__ = "exam_eligibility_rules"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    term_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("terms.id", ondelete="CASCADE"), nullable=False)
-    min_attendance_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=75.0)
-    require_fees_cleared: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    extra_rules: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "term_id", name="uq_exam_eligibility_rules_tenant_term"),
-        UniqueConstraint("tenant_id", "id", name="uq_exam_eligibility_rules_tenant_id"),
-    )
+    __tablename__ = 'exams'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    term_id = Column(UUID(as_uuid=True), ForeignKey('terms.id', ondelete='CASCADE'), nullable=False)
+    offering_id = Column(UUID(as_uuid=True), ForeignKey('course_offerings.id', ondelete='CASCADE'), nullable=False)
+    exam_type = Column(Text, nullable=False)  # MID_TERM, FINAL, LAB, RE_EXAM
+    exam_date = Column(Date, nullable=False)
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+    room_id = Column(UUID(as_uuid=True), ForeignKey('rooms.id', ondelete='SET NULL'))
+    max_marks = Column(Numeric(5, 2), default=100.00, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ExamRegistration(Base):
-    __tablename__ = "exam_registrations"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    exam_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("exams.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    is_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="APPROVED")  # REGISTERED, APPROVED, BLOCKED, CANCELLED
-    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "exam_id", "student_id", name="uq_exam_registrations_tenant_exam_student"),
-        UniqueConstraint("tenant_id", "id", name="uq_exam_registrations_tenant_id"),
-    )
-
-
-class AcademicFlag(Base):
-    __tablename__ = "academic_flags"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    offering_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("course_offerings.id", ondelete="SET NULL"), nullable=True)
-    flag_type: Mapped[str] = mapped_column(Text, nullable=False)  # ATTENDANCE, ACADEMIC, PLAGIARISM, MISCONDUCT, WELFARE, PERFORMANCE
-    raised_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("faculty.id", ondelete="RESTRICT"), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="RESOLVED")  # OPEN, IN_PROGRESS, RESOLVED, DISMISSED
-    assigned_to: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_academic_flags_tenant_id"),
-    )
-
-
-class GrievanceTicket(Base):
-    __tablename__ = "grievance_tickets"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    category: Mapped[str] = mapped_column(Text, nullable=False)  # ACADEMIC, FINANCE, FACILITY, EXAMINATION, HARASSMENT, OTHER
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="RESOLVED")  # OPEN, IN_PROGRESS, WAITING_FOR_RESPONSE, RESOLVED, CLOSED, REJECTED
-    priority: Mapped[str] = mapped_column(Text, nullable=False, default="MEDIUM")  # LOW, MEDIUM, HIGH, URGENT
-    assigned_to: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_grievance_tickets_tenant_id"),
-    )
-
-
-class LeaveRequest(Base):
-    __tablename__ = "leave_requests"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    faculty_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("faculty.id", ondelete="CASCADE"), nullable=False)
-    leave_type: Mapped[str] = mapped_column(Text, nullable=False, default="CASUAL")  # CASUAL, SICK, EARNED, DUTY, MATERNITY, SABBATICAL
-    start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="APPROVED")  # DRAFT, SUBMITTED, UNDER_REVIEW, APPROVED, REJECTED, COMPLETED
-    approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_leave_requests_tenant_id"),
-    )
+    __tablename__ = 'exam_registrations'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    exam_id = Column(UUID(as_uuid=True), ForeignKey('exams.id', ondelete='CASCADE'), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey('students.id', ondelete='CASCADE'), nullable=False)
+    is_eligible = Column(Boolean, default=True, nullable=False)
+    status = Column(Text, default='REGISTERED', nullable=False)
+    registered_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Notification(Base):
-    __tablename__ = "notifications"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    sent_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    offering_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("course_offerings.id", ondelete="CASCADE"), nullable=True)
-    event_type: Mapped[str] = mapped_column(Text, nullable=False)
-    target_role: Mapped[str | None] = mapped_column(Text, nullable=True)  # ADMIN, FACULTY, STUDENT, ALL
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    message: Mapped[str] = mapped_column(Text, nullable=False)
-    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_notifications_tenant_id"),
-    )
+    __tablename__ = 'notifications'
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False)
+    sent_by = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'))
+    offering_id = Column(UUID(as_uuid=True), ForeignKey('course_offerings.id', ondelete='SET NULL'))
+    event_type = Column(Text, nullable=False)
+    target_role = Column(Text)  # ADMIN, FACULTY, STUDENT, ALL
+    title = Column(Text, nullable=False)
+    message = Column(Text, nullable=False)
+    sent_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
-class NotificationDelivery(Base):
-    __tablename__ = "notification_deliveries"
+# =============================================================================
+# 2. Data Generators & Constants
+# =============================================================================
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    notification_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("notifications.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    channel: Mapped[str] = mapped_column(Text, nullable=False, default="IN_APP")  # IN_APP, EMAIL, SMS, PUSH
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="DELIVERED")  # PENDING, SENT, DELIVERED, FAILED
-    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+# Standard Bcrypt hash for: Password123!
+PASSWORD_HASH = "$2a$10$wN9P3XJv8mQv8W3hP5nqeOH5/w.wXhWjJ.88G4yGg5d9u1L7vB2Gy"
 
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "id", name="uq_notification_deliveries_tenant_id"),
-    )
+FIRST_NAMES = [
+    "Aarav", "Ananya", "Rohan", "Sneha", "Aditya", "Ishaan", "Pooja", "Vikram",
+    "Divya", "Siddharth", "Neha", "Rahul", "Kavya", "Varun", "Priya", "Arjun",
+    "Tanvi", "Manish", "Meera", "Karan", "Riya", "Gaurav", "Simran", "Nikhil",
+    "Shreya", "Akash", "Anika", "Suresh", "Bhavna", "Deepak", "Swati", "Harsh",
+    "Kritika", "Raj", "Tara", "Kunal", "Preeti", "Alok", "Lavanya", "Vivek",
+    "Nisha", "Mohit", "Smriti", "Yash", "Ritu", "Sameer", "Geeta", "Tushar",
+    "Sakshi", "Pranav"
+]
+
+LAST_NAMES = [
+    "Sharma", "Patel", "Verma", "Iyer", "Gupta", "Malhotra", "Nair", "Reddy",
+    "Deshmukh", "Mukherjee", "Joshi", "Bose", "Menon", "Chopra", "Kulkarni",
+    "Bhat", "Rao", "Kapoor", "Mishra", "Saxena", "Sen", "Nambiar", "Thakur",
+    "Agarwal", "Pillai", "Choudhury", "Bhattacharya", "Dubey", "Mehta", "Singh"
+]
 
 
-# ==============================================================================
-# Helper Data Generation Functions
-# ==============================================================================
+def generate_database_url() -> str:
+    """Build PostgreSQL connection URL from environment or defaults."""
+    env_url = os.getenv("DATABASE_URL")
+    if env_url:
+        return env_url
+    user = os.getenv("POSTGRES_USER", "nexora_admin")
+    password = os.getenv("POSTGRES_PASSWORD", "nexora_password")
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    dbname = os.getenv("POSTGRES_DB", "nexora")
+    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}"
 
-def clean_database(session):
-    """Truncates all tenant tables safely to allow fresh seeding."""
-    print("\n[i] Cleaning up existing tables...")
-    truncate_sql = """
-    TRUNCATE TABLE 
-        workflow_transitions, workflow_instances,
-        compliance_versions, compliance_records, analytics_reports,
-        message_attachments, messages, conversation_participants, conversations,
-        notification_deliveries, notifications, grievance_tickets,
-        schedule_change_requests, leave_requests, course_proposals,
-        document_requests, hall_tickets, exam_registrations, exam_eligibility_rules, exams,
-        payments, fee_records, student_scholarships, scholarships, fee_structures,
-        academic_flags, student_term_results, grade_records,
-        assignment_submissions, quiz_questions, assignments, grading_scales,
-        attendance, timetable_slots, course_materials, enrollments,
-        course_offerings, programme_courses, courses, calendar_events,
-        terms, academic_years, rooms, students, faculty, programmes,
-        departments, login_attempts, user_tokens, audit_logs, background_jobs,
-        files, users, platform_operators, tenants
-    CASCADE;
-    """
-    session.execute(text(truncate_sql))
+
+def clear_existing_data(session):
+    """Truncate tables in reverse dependency order."""
+    logger.info("Cleaning existing data from database...")
+    truncate_order = [
+        "exam_registrations", "exams", "payments", "fee_records", "fee_structures",
+        "student_term_results", "grade_records", "grading_scales", "assignment_submissions",
+        "assignments", "attendance", "timetable_slots", "course_materials", "enrollments",
+        "course_offerings", "programme_courses", "courses", "rooms", "terms", "academic_years",
+        "students", "programmes", "faculty", "departments", "notifications",
+        "files", "users", "platform_operators", "tenants"
+    ]
+    for table in truncate_order:
+        try:
+            session.execute(text(f"TRUNCATE TABLE {table} CASCADE;"))
+        except Exception:
+            pass
     session.commit()
-    print("    Existing data wiped successfully.")
+    logger.info("Database cleaned successfully.")
 
 
-def seed_database(db_url: str, clean: bool = False):
+def seed_database(db_url: str, reset: bool = True):
+    """Primary seeding routine connecting to PostgreSQL and populating schema."""
+    logger.info(f"Connecting to database at {db_url}...")
     engine = create_engine(db_url, echo=False)
     Session = sessionmaker(bind=engine)
     session = Session()
 
     try:
-        if clean:
-            clean_database(session)
+        if reset:
+            clear_existing_data(session)
 
-        print("\n" + "=" * 80)
-        print("  NEXORA MULTI-TENANT DATABASE SEEDER")
-        print("=" * 80)
-
-        # ----------------------------------------------------------------------
-        # 1. Platform Operator
-        # ----------------------------------------------------------------------
-        print("\n[*] Seeding Platform Operator...")
-        operator = PlatformOperator(
-            email="root@nexora.io",
+        # ---------------------------------------------------------------------
+        # 1. Global Platform Operator
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Global Platform Operator...")
+        platform_op = PlatformOperator(
+            id=uuid.UUID('00000000-0000-0000-0000-000000000001'),
+            email='superadmin@nexoracloud.com',
             password_hash=PASSWORD_HASH,
-            status="ACTIVE",
-            last_login_at=datetime.now(timezone.utc),
+            status='ACTIVE',
+            created_at=datetime.now(timezone.utc)
         )
-        session.add(operator)
+        session.add(platform_op)
         session.flush()
 
-        # ----------------------------------------------------------------------
-        # 2. Colleges (Tenants) - 2 Required
-        # ----------------------------------------------------------------------
-        print("[*] Seeding 2 Colleges (Tenants)...")
-        tenant1 = Tenant(
-            slug="apex-tech",
-            name="Apex Institute of Technology & Management",
-            status="ACTIVE",
+        # ---------------------------------------------------------------------
+        # 2. Tenants (2 Colleges)
+        # ---------------------------------------------------------------------
+        logger.info("Seeding 2 Colleges (Tenants)...")
+        t_apex_id = uuid.UUID('11111111-1111-1111-1111-111111111111')
+        t_metro_id = uuid.UUID('22222222-2222-2222-2222-222222222222')
+
+        t_apex = Tenant(
+            id=t_apex_id,
+            slug='apex-institute',
+            name='Apex Institute of Technology & Management',
+            status='ACTIVE',
             settings={
-                "branding": {"primary_color": "#1e40af", "logo_url": None, "short_name": "APEX"},
                 "currency": "INR",
                 "timezone": "Asia/Kolkata",
-                "thresholds": {"min_attendance_pct": 75.0, "passing_grade_pct": 40.0},
-            },
+                "branding": {
+                    "logo_url": "https://assets.nexora.edu/branding/apex-logo.svg",
+                    "primary_color": "#2563eb",
+                    "college_code": "APEX-2026"
+                },
+                "thresholds": {
+                    "min_attendance_pct": 75.0,
+                    "passing_grade_pct": 40.0,
+                    "max_course_credits_per_term": 26
+                }
+            }
         )
-        tenant2 = Tenant(
-            slug="horizon-univ",
-            name="Horizon University of Engineering & Science",
-            status="ACTIVE",
+
+        t_metro = Tenant(
+            id=t_metro_id,
+            slug='metro-uni',
+            name='Metropolitan University of Science & Technology',
+            status='ACTIVE',
             settings={
-                "branding": {"primary_color": "#047857", "logo_url": None, "short_name": "HUES"},
                 "currency": "INR",
                 "timezone": "Asia/Kolkata",
-                "thresholds": {"min_attendance_pct": 80.0, "passing_grade_pct": 45.0},
+                "branding": {
+                    "logo_url": "https://assets.nexora.edu/branding/metro-logo.svg",
+                    "primary_color": "#0d9488",
+                    "college_code": "MUST-1998"
+                },
+                "thresholds": {
+                    "min_attendance_pct": 80.0,
+                    "passing_grade_pct": 45.0,
+                    "max_course_credits_per_term": 28
+                }
+            }
+        )
+
+        session.add_all([t_apex, t_metro])
+        session.flush()
+
+        # ---------------------------------------------------------------------
+        # 3. Admins (2 Admins, 1 per College)
+        # ---------------------------------------------------------------------
+        logger.info("Seeding 2 Admins (1 per College)...")
+        u_admin_apex = User(
+            id=uuid.UUID('aaaaaaaa-0000-0000-0000-000000000001'),
+            tenant_id=t_apex_id,
+            role='ADMIN',
+            email='admin@apex.edu',
+            first_name='Dr. Rajesh',
+            last_name='Sharma',
+            password_hash=PASSWORD_HASH,
+            status='ACTIVE'
+        )
+
+        u_admin_metro = User(
+            id=uuid.UUID('aaaaaaaa-0000-0000-0000-000000000002'),
+            tenant_id=t_metro_id,
+            role='ADMIN',
+            email='admin@metro.edu',
+            first_name='Dr. Vikramaditya',
+            last_name='Sen',
+            password_hash=PASSWORD_HASH,
+            status='ACTIVE'
+        )
+
+        session.add_all([u_admin_apex, u_admin_metro])
+        session.flush()
+
+        # ---------------------------------------------------------------------
+        # 4. Departments & Programmes
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Departments & Academic Programmes...")
+        # Apex Departments
+        d_apex_cse = Department(id=uuid.UUID('bbbbbbbb-0000-0000-0000-000000000001'), tenant_id=t_apex_id, name='Department of Computer Science & Engineering', code='CSE', budget=15000000.00, established_on=date(2010, 6, 15))
+        d_apex_ece = Department(id=uuid.UUID('bbbbbbbb-0000-0000-0000-000000000002'), tenant_id=t_apex_id, name='Department of Electronics & Communication Engineering', code='ECE', budget=12000000.00, established_on=date(2012, 8, 1))
+        d_apex_me = Department(id=uuid.UUID('bbbbbbbb-0000-0000-0000-000000000003'), tenant_id=t_apex_id, name='Department of Mechanical Engineering', code='ME', budget=10000000.00, established_on=date(2014, 7, 20))
+
+        # Metro Departments
+        d_metro_cse = Department(id=uuid.UUID('bbbbbbbb-0000-0000-0000-000000000004'), tenant_id=t_metro_id, name='School of Computer Science & Engineering', code='CSE', budget=20000000.00, established_on=date(2005, 4, 10))
+        d_metro_it = Department(id=uuid.UUID('bbbbbbbb-0000-0000-0000-000000000005'), tenant_id=t_metro_id, name='Department of Information Technology', code='IT', budget=14000000.00, established_on=date(2008, 9, 1))
+        d_metro_dsai = Department(id=uuid.UUID('bbbbbbbb-0000-0000-0000-000000000006'), tenant_id=t_metro_id, name='Department of Data Science & Artificial Intelligence', code='DSAI', budget=18000000.00, established_on=date(2021, 1, 15))
+
+        session.add_all([d_apex_cse, d_apex_ece, d_apex_me, d_metro_cse, d_metro_it, d_metro_dsai])
+        session.flush()
+
+        # Apex Programmes
+        p_apex_btech_cse = Programme(id=uuid.UUID('dddddddd-0000-0000-0000-000000000001'), tenant_id=t_apex_id, department_id=d_apex_cse.id, name='Bachelor of Technology in Computer Science & Engineering', code='BTECH-CSE', duration_terms=8, degree_level='UNDERGRADUATE')
+        p_apex_btech_ece = Programme(id=uuid.UUID('dddddddd-0000-0000-0000-000000000002'), tenant_id=t_apex_id, department_id=d_apex_ece.id, name='Bachelor of Technology in Electronics & Communication Engineering', code='BTECH-ECE', duration_terms=8, degree_level='UNDERGRADUATE')
+        p_apex_mtech_ai = Programme(id=uuid.UUID('dddddddd-0000-0000-0000-000000000003'), tenant_id=t_apex_id, department_id=d_apex_cse.id, name='Master of Technology in Artificial Intelligence & Data Science', code='MTECH-AIDS', duration_terms=4, degree_level='POSTGRADUATE')
+
+        # Metro Programmes
+        p_metro_btech_cs = Programme(id=uuid.UUID('dddddddd-0000-0000-0000-000000000004'), tenant_id=t_metro_id, department_id=d_metro_cse.id, name='Bachelor of Technology in Computer Science', code='BTECH-CS', duration_terms=8, degree_level='UNDERGRADUATE')
+        p_metro_btech_it = Programme(id=uuid.UUID('dddddddd-0000-0000-0000-000000000005'), tenant_id=t_metro_id, department_id=d_metro_it.id, name='Bachelor of Technology in Information Technology', code='BTECH-IT', duration_terms=8, degree_level='UNDERGRADUATE')
+        p_metro_btech_dsai = Programme(id=uuid.UUID('dddddddd-0000-0000-0000-000000000006'), tenant_id=t_metro_id, department_id=d_metro_dsai.id, name='Bachelor of Technology in Data Science & Artificial Intelligence', code='BTECH-DSAI', duration_terms=8, degree_level='UNDERGRADUATE')
+
+        session.add_all([p_apex_btech_cse, p_apex_btech_ece, p_apex_mtech_ai, p_metro_btech_cs, p_metro_btech_it, p_metro_btech_dsai])
+        session.flush()
+
+        # ---------------------------------------------------------------------
+        # 5. Faculty Members (10 Faculty: 5 in Apex, 5 in Metro)
+        # ---------------------------------------------------------------------
+        logger.info("Seeding 10 Faculty Members across departments...")
+        faculty_data = [
+            # Apex Institute (5 Faculty)
+            {
+                "tenant_id": t_apex_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000011'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000001'),
+                "email": "hod.cse@apex.edu", "first_name": "Dr. Aris", "last_name": "Thorne",
+                "dept_id": d_apex_cse.id, "emp_no": "FAC-CSE-001", "designation": "Professor & Head of Department",
+                "is_hod": True
             },
-        )
-        session.add_all([tenant1, tenant2])
-        session.flush()
-
-        # Define Standard Grading Scale for both colleges
-        grading_data = [
-            ("A+", Decimal("90.0"), Decimal("100.0"), Decimal("10.0"), "Outstanding"),
-            ("A", Decimal("80.0"), Decimal("89.99"), Decimal("9.0"), "Excellent"),
-            ("B+", Decimal("70.0"), Decimal("79.99"), Decimal("8.0"), "Very Good"),
-            ("B", Decimal("60.0"), Decimal("69.99"), Decimal("7.0"), "Good"),
-            ("C", Decimal("50.0"), Decimal("59.99"), Decimal("6.0"), "Average"),
-            ("P", Decimal("40.0"), Decimal("49.99"), Decimal("4.0"), "Pass"),
-            ("F", Decimal("0.0"), Decimal("39.99"), Decimal("0.0"), "Fail"),
+            {
+                "tenant_id": t_apex_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000012'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000002'),
+                "email": "prof.priya@apex.edu", "first_name": "Dr. Priya", "last_name": "Nair",
+                "dept_id": d_apex_cse.id, "emp_no": "FAC-CSE-002", "designation": "Associate Professor",
+                "is_hod": False
+            },
+            {
+                "tenant_id": t_apex_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000013'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000003'),
+                "email": "prof.amitabha@apex.edu", "first_name": "Dr. Amitabha", "last_name": "Roy",
+                "dept_id": d_apex_cse.id, "emp_no": "FAC-CSE-003", "designation": "Assistant Professor",
+                "is_hod": False
+            },
+            {
+                "tenant_id": t_apex_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000014'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000004'),
+                "email": "prof.vikram@apex.edu", "first_name": "Dr. Vikram", "last_name": "Malhotra",
+                "dept_id": d_apex_ece.id, "emp_no": "FAC-ECE-001", "designation": "Professor & Head of Department",
+                "is_hod": True
+            },
+            {
+                "tenant_id": t_apex_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000015'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000005'),
+                "email": "prof.sneha@apex.edu", "first_name": "Dr. Sneha", "last_name": "Kulkarni",
+                "dept_id": d_apex_me.id, "emp_no": "FAC-ME-001", "designation": "Associate Professor & Head of Department",
+                "is_hod": True
+            },
+            # Metro University (5 Faculty)
+            {
+                "tenant_id": t_metro_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000016'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000006'),
+                "email": "hod.cse@metro.edu", "first_name": "Dr. Arvind", "last_name": "Menon",
+                "dept_id": d_metro_cse.id, "emp_no": "FAC-CSE-101", "designation": "Professor & Dean",
+                "is_hod": True
+            },
+            {
+                "tenant_id": t_metro_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000017'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000007'),
+                "email": "prof.shalini@metro.edu", "first_name": "Dr. Shalini", "last_name": "Mukherjee",
+                "dept_id": d_metro_cse.id, "emp_no": "FAC-CSE-102", "designation": "Associate Professor",
+                "is_hod": False
+            },
+            {
+                "tenant_id": t_metro_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000018'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000008'),
+                "email": "hod.it@metro.edu", "first_name": "Dr. Rahul", "last_name": "Deshmukh",
+                "dept_id": d_metro_it.id, "emp_no": "FAC-IT-101", "designation": "Professor & Head of Department",
+                "is_hod": True
+            },
+            {
+                "tenant_id": t_metro_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000019'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000009'),
+                "email": "prof.meera@metro.edu", "first_name": "Dr. Meera", "last_name": "Nambiar",
+                "dept_id": d_metro_it.id, "emp_no": "FAC-IT-102", "designation": "Assistant Professor",
+                "is_hod": False
+            },
+            {
+                "tenant_id": t_metro_id,
+                "user_id": uuid.UUID('aaaaaaaa-0000-0000-0000-000000000020'),
+                "faculty_id": uuid.UUID('cccccccc-0000-0000-0000-000000000010'),
+                "email": "hod.dsai@metro.edu", "first_name": "Dr. Karthik", "last_name": "Raman",
+                "dept_id": d_metro_dsai.id, "emp_no": "FAC-DSAI-101", "designation": "Professor & Head of Department",
+                "is_hod": True
+            }
         ]
 
-        for tenant in [tenant1, tenant2]:
-            for g, min_m, max_m, gp, desc in grading_data:
-                gs = GradingScale(
-                    tenant_id=tenant.id,
-                    grade=g,
-                    min_marks=min_m,
-                    max_marks=max_m,
-                    grade_points=gp,
-                    description=desc,
-                )
-                session.add(gs)
-
-        # ----------------------------------------------------------------------
-        # 3. Admins (2 Admins Total: 1 per College)
-        # ----------------------------------------------------------------------
-        print("[*] Seeding 2 Admins (1 per college)...")
-        admin1_user = User(
-            tenant_id=tenant1.id,
-            role="ADMIN",
-            email="admin.apex@nexora.edu",
-            first_name="Rajeshwar",
-            last_name="Sharma",
-            password_hash=PASSWORD_HASH,
-            status="ACTIVE",
-        )
-        admin2_user = User(
-            tenant_id=tenant2.id,
-            role="ADMIN",
-            email="admin.horizon@nexora.edu",
-            first_name="Sunita",
-            last_name="Kulkarni",
-            password_hash=PASSWORD_HASH,
-            status="ACTIVE",
-        )
-        session.add_all([admin1_user, admin2_user])
-        session.flush()
-
-        # ----------------------------------------------------------------------
-        # 4. Academic Years & Terms
-        # ----------------------------------------------------------------------
-        print("[*] Seeding Academic Calendars & Terms...")
-        terms_map = {}  # tenant_id -> list of terms
-        for tenant, admin_user in [(tenant1, admin1_user), (tenant2, admin2_user)]:
-            ay = AcademicYear(
-                tenant_id=tenant.id,
-                label="2025-26",
-                start_date=date(2025, 8, 1),
-                end_date=date(2026, 7, 31),
-                status="PUBLISHED",
-                published_by=admin_user.id,
-                published_at=datetime.now(timezone.utc),
+        faculty_records = []
+        for f in faculty_data:
+            f_user = User(
+                id=f["user_id"],
+                tenant_id=f["tenant_id"],
+                role='FACULTY',
+                email=f["email"],
+                first_name=f["first_name"],
+                last_name=f["last_name"],
+                password_hash=PASSWORD_HASH,
+                status='ACTIVE'
             )
-            session.add(ay)
+            session.add(f_user)
             session.flush()
 
-            term_odd = Term(
-                tenant_id=tenant.id,
-                academic_year_id=ay.id,
-                name="Fall Semester 2025 (Odd)",
-                term_no=1,
-                start_date=date(2025, 8, 1),
-                end_date=date(2025, 12, 20),
-                enrolment_opens_at=datetime(2025, 7, 15, 0, 0, tzinfo=timezone.utc),
-                enrolment_closes_at=datetime(2025, 8, 10, 23, 59, tzinfo=timezone.utc),
-                is_current=False,
+            fac = Faculty(
+                id=f["faculty_id"],
+                tenant_id=f["tenant_id"],
+                user_id=f_user.id,
+                department_id=f["dept_id"],
+                employee_no=f["emp_no"],
+                designation=f["designation"]
             )
-            term_even = Term(
-                tenant_id=tenant.id,
-                academic_year_id=ay.id,
-                name="Spring Semester 2026 (Even)",
-                term_no=2,
-                start_date=date(2026, 1, 10),
-                end_date=date(2026, 5, 30),
-                enrolment_opens_at=datetime(2025, 12, 15, 0, 0, tzinfo=timezone.utc),
-                enrolment_closes_at=datetime(2026, 1, 20, 23, 59, tzinfo=timezone.utc),
-                is_current=True,
-            )
-            session.add_all([term_odd, term_even])
-            session.flush()
-            terms_map[tenant.id] = [term_odd, term_even]
-
-            # Exam Eligibility Rule for Current Term
-            elig_rule = ExamEligibilityRule(
-                tenant_id=tenant.id,
-                term_id=term_even.id,
-                min_attendance_pct=Decimal("75.0"),
-                require_fees_cleared=True,
-            )
-            session.add(elig_rule)
-
-        # ----------------------------------------------------------------------
-        # 5. Rooms for each college
-        # ----------------------------------------------------------------------
-        rooms_map = {}
-        for tenant in [tenant1, tenant2]:
-            rooms_list = []
-            for b_idx, building in enumerate(["Aryabhata Block", "Ramanujan Tower"]):
-                for fl in range(1, 4):
-                    for rm_num in range(1, 3):
-                        code = f"{building[:3].upper()}-{fl}0{rm_num}"
-                        room_type = "LAB" if rm_num == 2 else "CLASSROOM"
-                        cap = 40 if room_type == "LAB" else 60
-                        room = Room(
-                            tenant_id=tenant.id,
-                            code=code,
-                            room_type=room_type,
-                            capacity=cap,
-                            building=building,
-                            floor=fl,
-                        )
-                        session.add(room)
-                        rooms_list.append(room)
-            session.flush()
-            rooms_map[tenant.id] = rooms_list
-
-        # ----------------------------------------------------------------------
-        # 6. Departments, Programmes, and 10 Faculty Members (5 per college)
-        # ----------------------------------------------------------------------
-        print("[*] Seeding Departments, Programmes, and 10 Faculty members across colleges...")
-
-        # College 1 Setup (Apex Institute)
-        # 3 Departments: CSE, ECE, MECH
-        dept_configs_t1 = [
-            ("Department of Computer Science & Engineering", "CSE", Decimal("5000000.00"), [
-                ("B.Tech in Computer Science & Engineering", "BTECH-CSE", 8, "UNDERGRADUATE"),
-                ("M.Tech in Artificial Intelligence", "MTECH-AI", 4, "POSTGRADUATE"),
-            ]),
-            ("Department of Electronics & Communication", "ECE", Decimal("4000000.00"), [
-                ("B.Tech in Electronics & Communication", "BTECH-ECE", 8, "UNDERGRADUATE"),
-            ]),
-            ("Department of Mechanical Engineering", "MECH", Decimal("3500000.00"), [
-                ("B.Tech in Mechanical Engineering", "BTECH-MECH", 8, "UNDERGRADUATE"),
-            ]),
-        ]
-
-        # Faculty 1 to 5 for College 1
-        faculty_meta_t1 = [
-            ("Arvind", "Menon", "prof.menon@apex.edu", "Professor & HOD", "CSE"),
-            ("Ananya", "Iyer", "dr.ananya@apex.edu", "Associate Professor", "CSE"),
-            ("Vikram", "Joshi", "prof.joshi@apex.edu", "Professor & HOD", "ECE"),
-            ("Priyanka", "Deshmukh", "dr.priyanka@apex.edu", "Assistant Professor", "ECE"),
-            ("Suresh", "Nambiar", "prof.nambiar@apex.edu", "Professor & HOD", "MECH"),
-        ]
-
-        # College 2 Setup (Horizon University)
-        # 3 Departments: ITAI, DSA, BMS
-        dept_configs_t2 = [
-            ("Department of Information Technology & AI", "ITAI", Decimal("6000000.00"), [
-                ("B.Tech in Artificial Intelligence & Data Science", "BTECH-AIDS", 8, "UNDERGRADUATE"),
-            ]),
-            ("Department of Data Science & Analytics", "DSA", Decimal("4500000.00"), [
-                ("M.Tech in Data Analytics & Machine Learning", "MTECH-DA", 4, "POSTGRADUATE"),
-            ]),
-            ("Department of Business & Management Studies", "BMS", Decimal("5500000.00"), [
-                ("Master of Business Administration", "MBA", 4, "POSTGRADUATE"),
-            ]),
-        ]
-
-        # Faculty 6 to 10 for College 2
-        faculty_meta_t2 = [
-            ("Rohan", "Bhattacharya", "prof.rohan@horizon.edu", "Professor & HOD", "ITAI"),
-            ("Shalini", "Verma", "dr.shalini@horizon.edu", "Associate Professor", "ITAI"),
-            ("Amitav", "Roy", "prof.roy@horizon.edu", "Professor & HOD", "DSA"),
-            ("Neha", "Agarwal", "dr.neha@horizon.edu", "Assistant Professor", "DSA"),
-            ("Deepak", "Saxena", "prof.saxena@horizon.edu", "Professor & HOD", "BMS"),
-        ]
-
-        all_departments = {}
-        all_programmes = {}
-        all_faculty = {tenant1.id: [], tenant2.id: []}
-
-        for tenant, dept_configs, faculty_meta in [
-            (tenant1, dept_configs_t1, faculty_meta_t1),
-            (tenant2, dept_configs_t2, faculty_meta_t2),
-        ]:
-            # Create Departments & Programmes
-            dept_obj_map = {}
-            for dept_name, dept_code, budget, progs in dept_configs:
-                dept = Department(
-                    tenant_id=tenant.id,
-                    name=dept_name,
-                    code=dept_code,
-                    budget=budget,
-                    established_on=date(2015, 6, 1),
-                )
-                session.add(dept)
-                session.flush()
-                dept_obj_map[dept_code] = dept
-                all_departments[dept.id] = dept
-
-                for prog_name, prog_code, duration, deg_lvl in progs:
-                    prog = Programme(
-                        tenant_id=tenant.id,
-                        department_id=dept.id,
-                        name=prog_name,
-                        code=prog_code,
-                        duration_terms=duration,
-                        degree_level=deg_lvl,
-                    )
-                    session.add(prog)
-                    session.flush()
-                    all_programmes[prog.id] = prog
-
-            # Create Faculty Members
-            emp_counter = 101 if tenant == tenant1 else 201
-            for fname, lname, femail, desig, dcode in faculty_meta:
-                f_user = User(
-                    tenant_id=tenant.id,
-                    role="FACULTY",
-                    email=femail,
-                    first_name=fname,
-                    last_name=lname,
-                    password_hash=PASSWORD_HASH,
-                    status="ACTIVE",
-                )
-                session.add(f_user)
-                session.flush()
-
-                dept = dept_obj_map[dcode]
-                fac = Faculty(
-                    tenant_id=tenant.id,
-                    user_id=f_user.id,
-                    department_id=dept.id,
-                    employee_no=f"EMP-{emp_counter}",
-                    designation=desig,
-                )
-                session.add(fac)
-                session.flush()
-                all_faculty[tenant.id].append(fac)
-                emp_counter += 1
-
-                # If HOD, assign as department head
-                if "HOD" in desig and dept.head_faculty_id is None:
-                    dept.head_faculty_id = fac.id
-
-            session.flush()
-
-        # ----------------------------------------------------------------------
-        # 7. Courses & Programme-Course Mappings
-        # ----------------------------------------------------------------------
-        print("[*] Seeding Courses and Programme Curriculum...")
-        course_catalog = {
-            "CSE": [
-                ("CS201", "Data Structures & Algorithms", 4),
-                ("CS202", "Database Management Systems", 4),
-                ("CS203", "Operating Systems & Concurrency", 4),
-                ("CS204", "Computer Networks & Protocols", 3),
-            ],
-            "ECE": [
-                ("EC201", "Digital Signal Processing", 4),
-                ("EC202", "VLSI Design & Architecture", 4),
-                ("EC203", "Analog & Digital Communication", 4),
-            ],
-            "MECH": [
-                ("ME201", "Thermodynamics & Heat Transfer", 4),
-                ("ME202", "Fluid Mechanics & Machinery", 4),
-                ("ME203", "Kinematics of Machines", 4),
-            ],
-            "ITAI": [
-                ("AI201", "Machine Learning Foundations", 4),
-                ("AI202", "Deep Neural Networks & NLP", 4),
-                ("AI203", "Cloud Computing & DevOps", 3),
-            ],
-            "DSA": [
-                ("DS501", "Big Data Analytics & Pipelines", 4),
-                ("DS502", "Statistical Inference & Modeling", 4),
-                ("DS503", "Data Visualization & BI", 3),
-            ],
-            "BMS": [
-                ("MB501", "Strategic Management & Leadership", 3),
-                ("MB502", "Financial Accounting & Valuation", 4),
-                ("MB503", "Marketing & Consumer Analytics", 3),
-            ],
-        }
-
-        all_courses = {}
-        for d_id, dept in all_departments.items():
-            if dept.code in course_catalog:
-                for c_code, c_title, creds in course_catalog[dept.code]:
-                    course = Course(
-                        tenant_id=dept.tenant_id,
-                        department_id=dept.id,
-                        course_code=c_code,
-                        title=c_title,
-                        credits=creds,
-                        status="ACTIVE",
-                    )
-                    session.add(course)
-                    session.flush()
-                    all_courses[course.id] = course
-
-                    # Link to programmes of this department
-                    for p_id, prog in all_programmes.items():
-                        if prog.department_id == dept.id:
-                            pc = ProgrammeCourse(
-                                tenant_id=dept.tenant_id,
-                                programme_id=prog.id,
-                                course_id=course.id,
-                                term_no=2,
-                                is_mandatory=True,
-                            )
-                            session.add(pc)
+            session.add(fac)
+            faculty_records.append(fac)
 
         session.flush()
 
-        # ----------------------------------------------------------------------
-        # 8. Course Offerings & Timetable Slots for Current Term
-        # ----------------------------------------------------------------------
-        print("[*] Seeding Course Offerings & Timetable Schedule...")
-        all_offerings = {tenant1.id: [], tenant2.id: []}
-        days = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"]
+        # Update HOD links on departments
+        d_apex_cse.head_faculty_id = faculty_records[0].id
+        d_apex_ece.head_faculty_id = faculty_records[3].id
+        d_apex_me.head_faculty_id = faculty_records[4].id
+        d_metro_cse.head_faculty_id = faculty_records[5].id
+        d_metro_it.head_faculty_id = faculty_records[7].id
+        d_metro_dsai.head_faculty_id = faculty_records[9].id
+        session.flush()
 
-        for tenant in [tenant1, tenant2]:
-            current_term = terms_map[tenant.id][1]  # Spring 2026 (current)
-            fac_list = all_faculty[tenant.id]
-            tenant_rooms = rooms_map[tenant.id]
+        # ---------------------------------------------------------------------
+        # 6. Academic Calendar (Years, Terms, Rooms)
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Academic Years, Terms, and Campus Rooms...")
+        # Academic Years
+        ay_apex = AcademicYear(id=uuid.UUID('ffffffff-0000-0000-0000-000000000001'), tenant_id=t_apex_id, label='2026-27', start_date=date(2026, 7, 1), end_date=date(2027, 6, 30), status='PUBLISHED', published_by=u_admin_apex.id, published_at=datetime.now(timezone.utc))
+        ay_metro = AcademicYear(id=uuid.UUID('ffffffff-0000-0000-0000-000000000002'), tenant_id=t_metro_id, label='2026-27', start_date=date(2026, 7, 1), end_date=date(2027, 6, 30), status='PUBLISHED', published_by=u_admin_metro.id, published_at=datetime.now(timezone.utc))
+        session.add_all([ay_apex, ay_metro])
+        session.flush()
 
-            tenant_courses = [c for c in all_courses.values() if c.tenant_id == tenant.id]
-            for idx, crs in enumerate(tenant_courses):
-                assigned_fac = fac_list[idx % len(fac_list)]
-                offering = CourseOffering(
-                    tenant_id=tenant.id,
-                    course_id=crs.id,
-                    term_id=current_term.id,
-                    faculty_id=assigned_fac.id,
-                    section="A",
-                    capacity=60,
-                    status="ACTIVE",
-                )
-                session.add(offering)
-                session.flush()
-                all_offerings[tenant.id].append(offering)
+        # Terms
+        term_apex_fall = Term(id=uuid.UUID('10101010-0000-0000-0000-000000000001'), tenant_id=t_apex_id, academic_year_id=ay_apex.id, name='Fall 2026 (Semester 5)', term_no=5, start_date=date(2026, 8, 1), end_date=date(2026, 12, 15), is_current=True)
+        term_apex_spring = Term(id=uuid.UUID('10101010-0000-0000-0000-000000000002'), tenant_id=t_apex_id, academic_year_id=ay_apex.id, name='Spring 2027 (Semester 6)', term_no=6, start_date=date(2027, 1, 5), end_date=date(2027, 5, 20), is_current=False)
+        term_metro_fall = Term(id=uuid.UUID('10101010-0000-0000-0000-000000000003'), tenant_id=t_metro_id, academic_year_id=ay_metro.id, name='Fall 2026 (Term 5)', term_no=5, start_date=date(2026, 8, 1), end_date=date(2026, 12, 15), is_current=True)
+        term_metro_spring = Term(id=uuid.UUID('10101010-0000-0000-0000-000000000004'), tenant_id=t_metro_id, academic_year_id=ay_metro.id, name='Spring 2027 (Term 6)', term_no=6, start_date=date(2027, 1, 5), end_date=date(2027, 5, 20), is_current=False)
+        session.add_all([term_apex_fall, term_apex_spring, term_metro_fall, term_metro_spring])
+        session.flush()
 
-                # Timetable slot (e.g. Monday/Wednesday at 09:00 - 10:30)
-                room = tenant_rooms[idx % len(tenant_rooms)]
-                start_h = 9 + ((idx * 2) % 6)
-                slot = TimetableSlot(
-                    tenant_id=tenant.id,
-                    offering_id=offering.id,
-                    room_id=room.id,
-                    faculty_id=assigned_fac.id,
-                    day_of_week=days[idx % len(days)],
-                    start_time=time(start_h, 0),
-                    end_time=time(start_h + 1, 30),
-                )
-                session.add(slot)
+        # Rooms
+        rooms = [
+            Room(id=uuid.UUID('20202020-0000-0000-0000-000000000001'), tenant_id=t_apex_id, code='LH-101', room_type='CLASSROOM', capacity=80, building='Aryabhata Block', floor=1),
+            Room(id=uuid.UUID('20202020-0000-0000-0000-000000000002'), tenant_id=t_apex_id, code='LAB-204', room_type='LAB', capacity=40, building='Turing Complex', floor=2),
+            Room(id=uuid.UUID('20202020-0000-0000-0000-000000000003'), tenant_id=t_apex_id, code='AUD-01', room_type='AUDITORIUM', capacity=300, building='Main Administration', floor=1),
+            Room(id=uuid.UUID('20202020-0000-0000-0000-000000000004'), tenant_id=t_metro_id, code='CR-301', room_type='CLASSROOM', capacity=70, building='Science Block A', floor=3),
+            Room(id=uuid.UUID('20202020-0000-0000-0000-000000000005'), tenant_id=t_metro_id, code='AI-LAB-1', room_type='LAB', capacity=45, building='Innovation Tower', floor=4)
+        ]
+        session.add_all(rooms)
+        session.flush()
 
-                # Create an Assignment & Quiz for this offering
-                asg = Assignment(
-                    tenant_id=tenant.id,
-                    offering_id=offering.id,
-                    kind="ASSIGNMENT",
-                    title=f"{crs.course_code} - Mid-Term Problem Set",
-                    description="Complete all problems and submit the solution PDF.",
-                    due_at=datetime.now(timezone.utc) + timedelta(days=14),
-                    max_marks=Decimal("100.00"),
-                    status="PUBLISHED",
-                    created_by=assigned_fac.user_id,
-                )
-                session.add(asg)
-                session.flush()
+        # ---------------------------------------------------------------------
+        # 7. Courses, Programme Courses & Course Offerings
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Courses, Curriculums, and Course Offerings...")
+        # Apex Courses
+        c_apex_dbms = Course(id=uuid.UUID('40404040-0000-0000-0000-000000000001'), tenant_id=t_apex_id, department_id=d_apex_cse.id, course_code='CS301', title='Database Management Systems', credits=4, status='ACTIVE')
+        c_apex_os = Course(id=uuid.UUID('40404040-0000-0000-0000-000000000002'), tenant_id=t_apex_id, department_id=d_apex_cse.id, course_code='CS302', title='Operating Systems & Architecture', credits=4, status='ACTIVE')
+        c_apex_dsp = Course(id=uuid.UUID('40404040-0000-0000-0000-000000000003'), tenant_id=t_apex_id, department_id=d_apex_ece.id, course_code='EC301', title='Digital Signal Processing', credits=4, status='ACTIVE')
+        c_apex_thermo = Course(id=uuid.UUID('40404040-0000-0000-0000-000000000004'), tenant_id=t_apex_id, department_id=d_apex_me.id, course_code='ME301', title='Applied Thermodynamics', credits=4, status='ACTIVE')
 
-                quiz = Assignment(
-                    tenant_id=tenant.id,
-                    offering_id=offering.id,
-                    kind="QUIZ",
-                    title=f"{crs.course_code} - Concept Evaluation Quiz",
-                    description="Multiple choice questions testing core theoretical principles.",
-                    due_at=datetime.now(timezone.utc) + timedelta(days=7),
-                    max_marks=Decimal("20.00"),
-                    status="PUBLISHED",
-                    created_by=assigned_fac.user_id,
-                )
-                session.add(quiz)
-                session.flush()
+        # Metro Courses
+        c_metro_ds = Course(id=uuid.UUID('40404040-0000-0000-0000-000000000005'), tenant_id=t_metro_id, department_id=d_metro_cse.id, course_code='CS-311', title='Advanced Data Structures & Algorithms', credits=4, status='ACTIVE')
+        c_metro_web = Course(id=uuid.UUID('40404040-0000-0000-0000-000000000006'), tenant_id=t_metro_id, department_id=d_metro_it.id, course_code='IT-321', title='Full Stack Web Technologies', credits=4, status='ACTIVE')
+        c_metro_ml = Course(id=uuid.UUID('40404040-0000-0000-0000-000000000007'), tenant_id=t_metro_id, department_id=d_metro_dsai.id, course_code='DS-331', title='Machine Learning & Neural Networks', credits=4, status='ACTIVE')
 
-                # Quiz questions
-                q1 = QuizQuestion(
-                    tenant_id=tenant.id,
-                    assignment_id=quiz.id,
-                    question_text=f"What is the primary operational objective of {crs.title}?",
-                    options={"A": "Performance optimization", "B": "Resource isolation", "C": "Fault tolerance", "D": "All of the above"},
-                    correct_answer="D",
-                    marks=Decimal("10.00"),
-                )
-                q2 = QuizQuestion(
-                    tenant_id=tenant.id,
-                    assignment_id=quiz.id,
-                    question_text=f"Which algorithm/technique is standard in {crs.title}?",
-                    options={"A": "Dynamic Programming", "B": "Gradient Descent", "C": "Round Robin", "D": "Domain Specific"},
-                    correct_answer="A",
-                    marks=Decimal("10.00"),
-                )
-                session.add_all([q1, q2])
+        session.add_all([c_apex_dbms, c_apex_os, c_apex_dsp, c_apex_thermo, c_metro_ds, c_metro_web, c_metro_ml])
+        session.flush()
 
-                # Exam for this offering
-                exam = Exam(
-                    tenant_id=tenant.id,
-                    term_id=current_term.id,
-                    offering_id=offering.id,
-                    exam_type="FINAL",
-                    exam_date=date(2026, 5, 15 + (idx % 10)),
-                    start_time=time(10, 0),
-                    end_time=time(13, 0),
-                    room_id=room.id,
-                    max_marks=Decimal("100.00"),
-                )
-                session.add(exam)
+        # Programme Courses
+        prog_courses = [
+            ProgrammeCourse(tenant_id=t_apex_id, programme_id=p_apex_btech_cse.id, course_id=c_apex_dbms.id, term_no=5, is_mandatory=True),
+            ProgrammeCourse(tenant_id=t_apex_id, programme_id=p_apex_btech_cse.id, course_id=c_apex_os.id, term_no=5, is_mandatory=True),
+            ProgrammeCourse(tenant_id=t_apex_id, programme_id=p_apex_btech_ece.id, course_id=c_apex_dsp.id, term_no=5, is_mandatory=True),
+            ProgrammeCourse(tenant_id=t_apex_id, programme_id=p_apex_mtech_ai.id, course_id=c_apex_dbms.id, term_no=1, is_mandatory=True),
+            ProgrammeCourse(tenant_id=t_metro_id, programme_id=p_metro_btech_cs.id, course_id=c_metro_ds.id, term_no=5, is_mandatory=True),
+            ProgrammeCourse(tenant_id=t_metro_id, programme_id=p_metro_btech_it.id, course_id=c_metro_web.id, term_no=5, is_mandatory=True),
+            ProgrammeCourse(tenant_id=t_metro_id, programme_id=p_metro_btech_dsai.id, course_id=c_metro_ml.id, term_no=5, is_mandatory=True),
+        ]
+        session.add_all(prog_courses)
+        session.flush()
+
+        # Course Offerings
+        off_apex_dbms = CourseOffering(id=uuid.UUID('50505050-0000-0000-0000-000000000001'), tenant_id=t_apex_id, course_id=c_apex_dbms.id, term_id=term_apex_fall.id, faculty_id=faculty_records[0].id, section='A', capacity=60, status='ACTIVE')
+        off_apex_os = CourseOffering(id=uuid.UUID('50505050-0000-0000-0000-000000000002'), tenant_id=t_apex_id, course_id=c_apex_os.id, term_id=term_apex_fall.id, faculty_id=faculty_records[1].id, section='A', capacity=60, status='ACTIVE')
+        off_apex_dsp = CourseOffering(id=uuid.UUID('50505050-0000-0000-0000-000000000003'), tenant_id=t_apex_id, course_id=c_apex_dsp.id, term_id=term_apex_fall.id, faculty_id=faculty_records[3].id, section='A', capacity=60, status='ACTIVE')
+        off_metro_ds = CourseOffering(id=uuid.UUID('50505050-0000-0000-0000-000000000004'), tenant_id=t_metro_id, course_id=c_metro_ds.id, term_id=term_metro_fall.id, faculty_id=faculty_records[5].id, section='A', capacity=60, status='ACTIVE')
+        off_metro_web = CourseOffering(id=uuid.UUID('50505050-0000-0000-0000-000000000005'), tenant_id=t_metro_id, course_id=c_metro_web.id, term_id=term_metro_fall.id, faculty_id=faculty_records[7].id, section='A', capacity=60, status='ACTIVE')
+        off_metro_ml = CourseOffering(id=uuid.UUID('50505050-0000-0000-0000-000000000006'), tenant_id=t_metro_id, course_id=c_metro_ml.id, term_id=term_metro_fall.id, faculty_id=faculty_records[9].id, section='A', capacity=60, status='ACTIVE')
+
+        session.add_all([off_apex_dbms, off_apex_os, off_apex_dsp, off_metro_ds, off_metro_web, off_metro_ml])
+        session.flush()
+
+        # Timetable slots
+        timetable_slots = [
+            TimetableSlot(tenant_id=t_apex_id, offering_id=off_apex_dbms.id, room_id=rooms[0].id, faculty_id=faculty_records[0].id, day_of_week='MONDAY', start_time=time(9, 0), end_time=time(10, 30)),
+            TimetableSlot(tenant_id=t_apex_id, offering_id=off_apex_os.id, room_id=rooms[0].id, faculty_id=faculty_records[1].id, day_of_week='TUESDAY', start_time=time(11, 0), end_time=time(12, 30)),
+            TimetableSlot(tenant_id=t_apex_id, offering_id=off_apex_dsp.id, room_id=rooms[1].id, faculty_id=faculty_records[3].id, day_of_week='WEDNESDAY', start_time=time(14, 0), end_time=time(15, 30)),
+            TimetableSlot(tenant_id=t_metro_id, offering_id=off_metro_ds.id, room_id=rooms[3].id, faculty_id=faculty_records[5].id, day_of_week='MONDAY', start_time=time(9, 30), end_time=time(11, 0)),
+            TimetableSlot(tenant_id=t_metro_id, offering_id=off_metro_web.id, room_id=rooms[3].id, faculty_id=faculty_records[7].id, day_of_week='THURSDAY', start_time=time(10, 0), end_time=time(11, 30)),
+            TimetableSlot(tenant_id=t_metro_id, offering_id=off_metro_ml.id, room_id=rooms[4].id, faculty_id=faculty_records[9].id, day_of_week='FRIDAY', start_time=time(14, 0), end_time=time(16, 0)),
+        ]
+        session.add_all(timetable_slots)
+        session.flush()
+
+        # ---------------------------------------------------------------------
+        # 8. Students (50 Students across departments)
+        # ---------------------------------------------------------------------
+        logger.info("Seeding 50 Students across departments and programmes...")
+        # 25 in Apex, 25 in Metro
+        # Apex: 15 CSE, 6 ECE, 4 AI
+        # Metro: 10 CS, 8 IT, 7 DSAI
+        student_configs = []
+
+        # Apex 25
+        for i in range(1, 16):
+            student_configs.append({
+                "tenant_id": t_apex_id, "prog": p_apex_btech_cse,
+                "roll": f"2024CSE{i:03d}", "domain": "apex.edu", "offering": off_apex_dbms, "offering_aux": off_apex_os
+            })
+        for i in range(1, 7):
+            student_configs.append({
+                "tenant_id": t_apex_id, "prog": p_apex_btech_ece,
+                "roll": f"2024ECE{i:03d}", "domain": "apex.edu", "offering": off_apex_dsp, "offering_aux": None
+            })
+        for i in range(1, 5):
+            student_configs.append({
+                "tenant_id": t_apex_id, "prog": p_apex_mtech_ai,
+                "roll": f"2024AI{i:03d}", "domain": "apex.edu", "offering": off_apex_dbms, "offering_aux": None
+            })
+
+        # Metro 25
+        for i in range(1, 11):
+            student_configs.append({
+                "tenant_id": t_metro_id, "prog": p_metro_btech_cs,
+                "roll": f"2024CS{i+100:03d}", "domain": "metro.edu", "offering": off_metro_ds, "offering_aux": None
+            })
+        for i in range(1, 9):
+            student_configs.append({
+                "tenant_id": t_metro_id, "prog": p_metro_btech_it,
+                "roll": f"2024IT{i+100:03d}", "domain": "metro.edu", "offering": off_metro_web, "offering_aux": None
+            })
+        for i in range(1, 8):
+            student_configs.append({
+                "tenant_id": t_metro_id, "prog": p_metro_btech_dsai,
+                "roll": f"2024DS{i+100:03d}", "domain": "metro.edu", "offering": off_metro_ml, "offering_aux": None
+            })
+
+        students = []
+        enrollments = []
+        for idx, cfg in enumerate(student_configs):
+            first_name = FIRST_NAMES[idx % len(FIRST_NAMES)]
+            last_name = LAST_NAMES[(idx * 3 + 7) % len(LAST_NAMES)]
+            email = f"student.{first_name.lower()}.{last_name.lower()}{idx+1}@{cfg['domain']}"
+            user_uuid = uuid.UUID(f"eeeeeeee-0000-0000-0000-{idx+1:012d}")
+            student_uuid = uuid.UUID(f"eeeeeeee-1111-0000-0000-{idx+1:012d}")
+
+            s_user = User(
+                id=user_uuid,
+                tenant_id=cfg["tenant_id"],
+                role='STUDENT',
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                password_hash=PASSWORD_HASH,
+                status='ACTIVE'
+            )
+            session.add(s_user)
+            session.flush()
+
+            student = Student(
+                id=student_uuid,
+                tenant_id=cfg["tenant_id"],
+                user_id=s_user.id,
+                programme_id=cfg["prog"].id,
+                roll_no=cfg["roll"],
+                admission_year=2024,
+                current_term_no=5,
+                status='ACTIVE'
+            )
+            session.add(student)
+            students.append(student)
 
         session.flush()
 
-        # ----------------------------------------------------------------------
-        # 9. Fee Structures & Scholarships
-        # ----------------------------------------------------------------------
-        print("[*] Seeding Fee Structures and Scholarships...")
-        fee_struct_map = {}
-        for p_id, prog in all_programmes.items():
-            current_term = terms_map[prog.tenant_id][1]
-            amount = Decimal("65000.00") if "B.Tech" in prog.name else Decimal("85000.00")
-            fs = FeeStructure(
-                tenant_id=prog.tenant_id,
-                programme_id=prog.id,
-                term_id=current_term.id,
-                name=f"{prog.code} Tuition & Laboratory Fee - Term {current_term.term_no}",
-                amount=amount,
-                due_date=date(2026, 2, 15),
-            )
-            session.add(fs)
-            session.flush()
-            fee_struct_map[prog.id] = fs
-
-        # Merit Scholarships
-        scholarship_map = {}
-        for tenant in [tenant1, tenant2]:
-            sch = Scholarship(
-                tenant_id=tenant.id,
-                name="Dean's Academic Excellence Merit Grant",
-                kind="PERCENT",
-                value=Decimal("25.00"),
-                criteria="SGPA >= 8.5 in previous term",
-            )
-            session.add(sch)
-            session.flush()
-            scholarship_map[tenant.id] = sch
-
-        # ----------------------------------------------------------------------
-        # 10. 50 Students (25 per College) & Full Academics Seeding
-        # ----------------------------------------------------------------------
-        print("[*] Seeding 50 Students (25 in College 1, 25 in College 2) with full relational data...")
-
-        student_count = 0
-        all_seeded_students = []
-
-        for tenant_idx, tenant in enumerate([tenant1, tenant2]):
-            t_progs = [p for p in all_programmes.values() if p.tenant_id == tenant.id]
-            t_offerings = all_offerings[tenant.id]
-            current_term = terms_map[tenant.id][1]
-            t_fac = all_faculty[tenant.id]
-            t_sch = scholarship_map[tenant.id]
-
-            # 25 students for this college
-            for s_idx in range(1, 26):
-                student_count += 1
-                prog = t_progs[(s_idx - 1) % len(t_progs)]
-                fs = fee_struct_map[prog.id]
-
-                # Realistic Indian Names
-                first_name = fake.first_name()
-                last_name = fake.last_name()
-                college_domain = "apex.edu" if tenant == tenant1 else "horizon.edu"
-                s_email = f"student{student_count}.{first_name.lower()}@{college_domain}"
-                roll_prefix = "APX" if tenant == tenant1 else "HRZ"
-                admission_year = random.choice([2023, 2024, 2025])
-                roll_no = f"{roll_prefix}-{prog.code}-{admission_year % 100}-{s_idx:03d}"
-
-                s_user = User(
-                    tenant_id=tenant.id,
-                    role="STUDENT",
-                    email=s_email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    password_hash=PASSWORD_HASH,
-                    status="ACTIVE",
-                    last_login_at=datetime.now(timezone.utc) - timedelta(hours=random.randint(1, 72)),
-                )
-                session.add(s_user)
-                session.flush()
-
-                student = Student(
-                    tenant_id=tenant.id,
-                    user_id=s_user.id,
-                    programme_id=prog.id,
-                    roll_no=roll_no,
-                    admission_year=admission_year,
-                    current_term_no=2,
-                    status="ACTIVE",
-                )
-                session.add(student)
-                session.flush()
-                all_seeded_students.append(student)
-
-                # Enroll in matching department course offerings
-                dept_offerings = [
-                    o for o in t_offerings
-                    if all_courses[o.course_id].department_id == prog.department_id
-                ]
-                enrolled_for_student = dept_offerings if dept_offerings else t_offerings[:2]
-
-                for off in enrolled_for_student:
-                    enr = Enrollment(
-                        tenant_id=tenant.id,
-                        offering_id=off.id,
-                        student_id=student.id,
-                        status="ENROLLED",
-                        enrolled_at=datetime.now(timezone.utc) - timedelta(days=45),
-                    )
-                    session.add(enr)
-                    session.flush()
-
-                    # Attendance records (Past 10 class dates)
-                    today = date.today()
-                    for d_offset in range(1, 11):
-                        att_date = today - timedelta(days=d_offset * 2)
-                        att_status = "PRESENT" if random.random() < 0.90 else random.choice(["ABSENT", "LATE"])
-                        att = Attendance(
-                            tenant_id=tenant.id,
-                            offering_id=off.id,
-                            student_id=student.id,
-                            att_date=att_date,
-                            status=att_status,
-                            marked_by=off.faculty_id,
-                        )
-                        session.add(att)
-
-                    # Grade Record for this course offering
-                    internal = Decimal(str(round(random.uniform(22.0, 30.0), 2)))
-                    final_m = Decimal(str(round(random.uniform(50.0, 70.0), 2)))
-                    total_marks = internal + final_m
-                    if total_marks >= 90:
-                        grd, gp = "A+", Decimal("10.0")
-                    elif total_marks >= 80:
-                        grd, gp = "A", Decimal("9.0")
-                    elif total_marks >= 70:
-                        grd, gp = "B+", Decimal("8.0")
-                    elif total_marks >= 60:
-                        grd, gp = "B", Decimal("7.0")
-                    else:
-                        grd, gp = "C", Decimal("6.0")
-
-                    gr = GradeRecord(
-                        tenant_id=tenant.id,
-                        student_id=student.id,
-                        offering_id=off.id,
-                        internal_marks=internal,
-                        final_marks=final_m,
-                        grade=grd,
-                        grade_points=gp,
-                        status="COMPLETED",
-                        submitted_by=off.faculty_id,
-                        approved_by=admin1_user.id if tenant == tenant1 else admin2_user.id,
-                        published_at=datetime.now(timezone.utc) - timedelta(days=5),
-                    )
-                    session.add(gr)
-
-                # Term Result Summary
-                sgpa = Decimal(str(round(random.uniform(7.2, 9.8), 2)))
-                cgpa = Decimal(str(round(random.uniform(7.0, 9.7), 2)))
-                term_res = StudentTermResult(
-                    tenant_id=tenant.id,
+        # Create student course enrollments
+        for idx, cfg in enumerate(student_configs):
+            student = students[idx]
+            # Primary course enrollment
+            enrollments.append(
+                Enrollment(
+                    tenant_id=cfg["tenant_id"],
+                    offering_id=cfg["offering"].id,
                     student_id=student.id,
-                    term_id=current_term.id,
-                    sgpa=sgpa,
-                    cgpa=cgpa,
-                    credits_earned=20,
-                    published_at=datetime.now(timezone.utc) - timedelta(days=5),
+                    status='ENROLLED'
                 )
-                session.add(term_res)
-
-                # Fee Record & Payment
-                discount = Decimal("16250.00") if (s_idx % 5 == 0) else Decimal("0.00")
-                amount_due = fs.amount - discount
-                is_paid = (s_idx % 4 != 0)  # 75% have completed payment
-
-                fee_rec = FeeRecord(
-                    tenant_id=tenant.id,
-                    student_id=student.id,
-                    fee_structure_id=fs.id,
-                    amount_due=amount_due,
-                    discount=discount,
-                    due_date=fs.due_date,
-                    paid_date=date(2026, 2, 10) if is_paid else None,
-                    status="PAID" if is_paid else "PENDING",
+            )
+            # Aux course enrollment if available
+            if cfg["offering_aux"]:
+                enrollments.append(
+                    Enrollment(
+                        tenant_id=cfg["tenant_id"],
+                        offering_id=cfg["offering_aux"].id,
+                        student_id=student.id,
+                        status='ENROLLED'
+                    )
                 )
-                session.add(fee_rec)
-                session.flush()
 
-                if is_paid:
-                    pmt = Payment(
-                        tenant_id=tenant.id,
-                        fee_record_id=fee_rec.id,
-                        amount=amount_due,
-                        method=random.choice(["UPI", "CARD", "NET_BANKING"]),
-                        gateway_ref=f"PAY-TXN-{tenant.slug.upper()}-{uuid.uuid4().hex[:10].upper()}",
-                        status="VERIFIED",
-                        verified_at=datetime(2026, 2, 10, 14, 30, tzinfo=timezone.utc),
-                    )
-                    session.add(pmt)
-
-                # Award Scholarship if top performer
-                if discount > 0:
-                    st_sch = StudentScholarship(
-                        tenant_id=tenant.id,
-                        student_id=student.id,
-                        scholarship_id=t_sch.id,
-                        term_id=current_term.id,
-                        awarded_at=datetime.now(timezone.utc) - timedelta(days=30),
-                    )
-                    session.add(st_sch)
-
-                # Academic Flag or Grievance for occasional students
-                if s_idx == 3:
-                    flag = AcademicFlag(
-                        tenant_id=tenant.id,
-                        student_id=student.id,
-                        offering_id=enrolled_for_student[0].id,
-                        flag_type="ATTENDANCE",
-                        raised_by=t_fac[0].id,
-                        description="Shortage of attendance (< 75%) flagged for counselor review.",
-                        status="RESOLVED",
-                        assigned_to=t_fac[0].user_id,
-                        resolved_at=datetime.now(timezone.utc) - timedelta(days=2),
-                    )
-                    session.add(flag)
-
-                if s_idx == 7:
-                    ticket = GrievanceTicket(
-                        tenant_id=tenant.id,
-                        student_id=student.id,
-                        category="FACILITY",
-                        title="GPU Access Request for CV Lab",
-                        priority="MEDIUM",
-                        description="Request for additional GPU access in Computer Vision Lab 202.",
-                        status="RESOLVED",
-                        assigned_to=admin1_user.id if tenant == tenant1 else admin2_user.id,
-                        resolved_at=datetime.now(timezone.utc) - timedelta(days=1),
-                        resolution_notes="Granted supplementary compute quota on Lab Server 2.",
-                    )
-                    session.add(ticket)
-
+        session.add_all(enrollments)
         session.flush()
 
-        # ----------------------------------------------------------------------
-        # 11. Notifications & Faculty Leave Requests
-        # ----------------------------------------------------------------------
-        print("[*] Seeding System Notifications & Faculty Requests...")
-        for tenant, admin_user in [(tenant1, admin1_user), (tenant2, admin2_user)]:
-            notif = Notification(
-                tenant_id=tenant.id,
-                sent_by=admin_user.id,
-                event_type="CIRCULAR",
-                target_role="ALL",
-                title="Spring 2026 Mid-Term Schedule Published",
-                message="The mid-term examination timetable and hall ticket guidelines are now accessible on your portal dashboard.",
-            )
-            session.add(notif)
-            session.flush()
-
-            # Deliver to admin + first 5 faculty + first 10 students
-            target_users = [admin_user] + [
-                session.get(User, f.user_id) for f in all_faculty[tenant.id][:3]
-            ]
-            for u in target_users:
-                if u:
-                    nd = NotificationDelivery(
-                        tenant_id=tenant.id,
-                        notification_id=notif.id,
-                        user_id=u.id,
-                        channel="IN_APP",
-                        status="DELIVERED",
-                        read_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        # ---------------------------------------------------------------------
+        # 9. Attendance & Assessment Records
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Attendance records and Assessment activities...")
+        attendance_dates = [
+            date(2026, 8, 10), date(2026, 8, 17), date(2026, 8, 24),
+            date(2026, 9, 1), date(2026, 9, 8), date(2026, 9, 15)
+        ]
+        attendance_records = []
+        for enr in enrollments:
+            for att_d in attendance_dates:
+                status_choice = random.choices(['PRESENT', 'PRESENT', 'PRESENT', 'ABSENT', 'LATE'], weights=[70, 15, 5, 5, 5])[0]
+                attendance_records.append(
+                    Attendance(
+                        tenant_id=enr.tenant_id,
+                        offering_id=enr.offering_id,
+                        student_id=enr.student_id,
+                        att_date=att_d,
+                        status=status_choice
                     )
-                    session.add(nd)
+                )
+        session.add_all(attendance_records)
+        session.flush()
 
-            # Sample Faculty Leave Request
-            fac = all_faculty[tenant.id][0]
-            leave = LeaveRequest(
-                tenant_id=tenant.id,
-                faculty_id=fac.id,
-                leave_type="DUTY",
-                start_date=date(2026, 4, 10),
-                end_date=date(2026, 4, 12),
-                reason="Attending IEEE International Conference on AI in Higher Education as Keynote Speaker.",
-                status="APPROVED",
-                approved_by=admin_user.id,
-                approved_at=datetime.now(timezone.utc) - timedelta(days=3),
-                remarks="Approved with duty leave concession.",
+        # Assignments
+        asg_dbms_1 = Assignment(
+            id=uuid.UUID('60606060-0000-0000-0000-000000000001'),
+            tenant_id=t_apex_id,
+            offering_id=off_apex_dbms.id,
+            kind='ASSIGNMENT',
+            title='Relational Schema Design & Normalization Project',
+            description='Design 3NF schemas for enterprise e-commerce backend with BCNF proofs.',
+            due_at=datetime(2026, 9, 30, 23, 59, 59, tzinfo=timezone.utc),
+            max_marks=100.00,
+            status='PUBLISHED',
+            created_by=u_admin_apex.id
+        )
+        asg_ds_1 = Assignment(
+            id=uuid.UUID('60606060-0000-0000-0000-000000000002'),
+            tenant_id=t_metro_id,
+            offering_id=off_metro_ds.id,
+            kind='ASSIGNMENT',
+            title='Red-Black Tree and B-Tree Performance Analysis',
+            description='Implement and benchmark cache locality of Balanced Search Trees in C++.',
+            due_at=datetime(2026, 9, 30, 23, 59, 59, tzinfo=timezone.utc),
+            max_marks=100.00,
+            status='PUBLISHED',
+            created_by=u_admin_metro.id
+        )
+        session.add_all([asg_dbms_1, asg_ds_1])
+        session.flush()
+
+        # Submissions for first 10 students of each offering
+        submissions = []
+        for student in students[:10]:
+            submissions.append(
+                AssignmentSubmission(
+                    tenant_id=t_apex_id,
+                    assignment_id=asg_dbms_1.id,
+                    student_id=student.id,
+                    marks=88.50,
+                    feedback='Excellent schema normalization and diagram clarity.',
+                    status='GRADED'
+                )
             )
-            session.add(leave)
+        for student in students[25:35]:
+            submissions.append(
+                AssignmentSubmission(
+                    tenant_id=t_metro_id,
+                    assignment_id=asg_ds_1.id,
+                    student_id=student.id,
+                    marks=92.00,
+                    feedback='Comprehensive benchmarking results and clean implementation.',
+                    status='GRADED'
+                )
+            )
+        session.add_all(submissions)
+        session.flush()
 
-        # Commit all transactions
+        # ---------------------------------------------------------------------
+        # 10. Grading Scales, Grade Records & Term Results
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Grading Scales and Academic Grade Records...")
+        grade_scales = [
+            GradingScale(tenant_id=t_apex_id, grade='O', min_marks=90, max_marks=100, grade_points=10.0, description='Outstanding'),
+            GradingScale(tenant_id=t_apex_id, grade='A+', min_marks=80, max_marks=89.99, grade_points=9.0, description='Excellent'),
+            GradingScale(tenant_id=t_apex_id, grade='A', min_marks=70, max_marks=79.99, grade_points=8.0, description='Very Good'),
+            GradingScale(tenant_id=t_apex_id, grade='B+', min_marks=60, max_marks=69.99, grade_points=7.0, description='Good'),
+            GradingScale(tenant_id=t_apex_id, grade='B', min_marks=50, max_marks=59.99, grade_points=6.0, description='Above Average'),
+            GradingScale(tenant_id=t_apex_id, grade='C', min_marks=40, max_marks=49.99, grade_points=5.0, description='Pass'),
+            GradingScale(tenant_id=t_apex_id, grade='F', min_marks=0, max_marks=39.99, grade_points=0.0, description='Fail'),
+            # Metro
+            GradingScale(tenant_id=t_metro_id, grade='A+', min_marks=90, max_marks=100, grade_points=10.0, description='Outstanding'),
+            GradingScale(tenant_id=t_metro_id, grade='A', min_marks=80, max_marks=89.99, grade_points=9.0, description='Excellent'),
+            GradingScale(tenant_id=t_metro_id, grade='B', min_marks=70, max_marks=79.99, grade_points=8.0, description='Good'),
+            GradingScale(tenant_id=t_metro_id, grade='C', min_marks=50, max_marks=69.99, grade_points=6.0, description='Average'),
+            GradingScale(tenant_id=t_metro_id, grade='F', min_marks=0, max_marks=49.99, grade_points=0.0, description='Fail'),
+        ]
+        session.add_all(grade_scales)
+        session.flush()
+
+        grade_records = []
+        for enr in enrollments[:20]:
+            grade_records.append(
+                GradeRecord(
+                    tenant_id=enr.tenant_id,
+                    student_id=enr.student_id,
+                    offering_id=enr.offering_id,
+                    internal_marks=38.00,
+                    final_marks=48.00,
+                    grade='A+',
+                    grade_points=9.0,
+                    status='APPROVED',
+                    published_at=datetime.now(timezone.utc)
+                )
+            )
+        session.add_all(grade_records)
+        session.flush()
+
+        term_results = []
+        for s in students[:25]:
+            term_results.append(
+                StudentTermResult(
+                    tenant_id=t_apex_id,
+                    student_id=s.id,
+                    term_id=term_apex_fall.id,
+                    sgpa=8.85,
+                    cgpa=8.70,
+                    credits_earned=22,
+                    published_at=datetime.now(timezone.utc)
+                )
+            )
+        for s in students[25:]:
+            term_results.append(
+                StudentTermResult(
+                    tenant_id=t_metro_id,
+                    student_id=s.id,
+                    term_id=term_metro_fall.id,
+                    sgpa=9.10,
+                    cgpa=8.95,
+                    credits_earned=24,
+                    published_at=datetime.now(timezone.utc)
+                )
+            )
+        session.add_all(term_results)
+        session.flush()
+
+        # ---------------------------------------------------------------------
+        # 11. Finance & Fee Structures
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Fee Structures, Records & Payment Receipts...")
+        fee_struct_apex = FeeStructure(
+            id=uuid.UUID('70707070-0000-0000-0000-000000000001'),
+            tenant_id=t_apex_id,
+            programme_id=p_apex_btech_cse.id,
+            term_id=term_apex_fall.id,
+            name='Tuition & Laboratory Fee (Fall 2026)',
+            amount=85000.00,
+            due_date=date(2026, 8, 30)
+        )
+        fee_struct_metro = FeeStructure(
+            id=uuid.UUID('70707070-0000-0000-0000-000000000002'),
+            tenant_id=t_metro_id,
+            programme_id=p_metro_btech_cs.id,
+            term_id=term_metro_fall.id,
+            name='Semester Academic & Facility Fee (Fall 2026)',
+            amount=95000.00,
+            due_date=date(2026, 8, 30)
+        )
+        session.add_all([fee_struct_apex, fee_struct_metro])
+        session.flush()
+
+        fee_records = []
+        payments = []
+        for s in students[:15]:
+            fr = FeeRecord(
+                tenant_id=t_apex_id,
+                student_id=s.id,
+                fee_structure_id=fee_struct_apex.id,
+                amount_due=85000.00,
+                discount=0.00,
+                due_date=date(2026, 8, 30),
+                paid_date=date(2026, 8, 20),
+                status='PAID'
+            )
+            session.add(fr)
+            session.flush()
+            fee_records.append(fr)
+
+            payments.append(
+                Payment(
+                    tenant_id=t_apex_id,
+                    fee_record_id=fr.id,
+                    amount=85000.00,
+                    method='UPI',
+                    gateway_ref=f"PAY-APEX-UPI-{s.roll_no}",
+                    status='VERIFIED',
+                    verified_at=datetime.now(timezone.utc)
+                )
+            )
+
+        for s in students[25:35]:
+            fr = FeeRecord(
+                tenant_id=t_metro_id,
+                student_id=s.id,
+                fee_structure_id=fee_struct_metro.id,
+                amount_due=95000.00,
+                discount=5000.00,
+                due_date=date(2026, 8, 30),
+                paid_date=date(2026, 8, 22),
+                status='PAID'
+            )
+            session.add(fr)
+            session.flush()
+            fee_records.append(fr)
+
+            payments.append(
+                Payment(
+                    tenant_id=t_metro_id,
+                    fee_record_id=fr.id,
+                    amount=90000.00,
+                    method='NET_BANKING',
+                    gateway_ref=f"PAY-METRO-NET-{s.roll_no}",
+                    status='VERIFIED',
+                    verified_at=datetime.now(timezone.utc)
+                )
+            )
+
+        session.add_all(payments)
+        session.flush()
+
+        # ---------------------------------------------------------------------
+        # 12. Examination Management
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Examination Schedules and Student Registrations...")
+        exam_apex = Exam(
+            id=uuid.UUID('80808080-0000-0000-0000-000000000001'),
+            tenant_id=t_apex_id,
+            term_id=term_apex_fall.id,
+            offering_id=off_apex_dbms.id,
+            exam_type='MID_TERM',
+            exam_date=date(2026, 10, 12),
+            start_time=time(10, 0),
+            end_time=time(12, 0),
+            room_id=rooms[0].id,
+            max_marks=50.00
+        )
+        exam_metro = Exam(
+            id=uuid.UUID('80808080-0000-0000-0000-000000000002'),
+            tenant_id=t_metro_id,
+            term_id=term_metro_fall.id,
+            offering_id=off_metro_ds.id,
+            exam_type='MID_TERM',
+            exam_date=date(2026, 10, 14),
+            start_time=time(14, 0),
+            end_time=time(16, 0),
+            room_id=rooms[3].id,
+            max_marks=50.00
+        )
+        session.add_all([exam_apex, exam_metro])
+        session.flush()
+
+        exam_regs = []
+        for s in students[:15]:
+            exam_regs.append(
+                ExamRegistration(
+                    tenant_id=t_apex_id,
+                    exam_id=exam_apex.id,
+                    student_id=s.id,
+                    is_eligible=True,
+                    status='APPROVED'
+                )
+            )
+        for s in students[25:35]:
+            exam_regs.append(
+                ExamRegistration(
+                    tenant_id=t_metro_id,
+                    exam_id=exam_metro.id,
+                    student_id=s.id,
+                    is_eligible=True,
+                    status='APPROVED'
+                )
+            )
+        session.add_all(exam_regs)
+        session.flush()
+
+        # ---------------------------------------------------------------------
+        # 13. System Notifications & Broadcasts
+        # ---------------------------------------------------------------------
+        logger.info("Seeding Notifications & Announcements...")
+        notifications = [
+            Notification(
+                tenant_id=t_apex_id,
+                sent_by=u_admin_apex.id,
+                event_type='CAMPUS_ANNOUNCEMENT',
+                target_role='ALL',
+                title='Welcome to Academic Year 2026-27',
+                message='All students and faculty are requested to verify their timetable and laboratory assignments.'
+            ),
+            Notification(
+                tenant_id=t_metro_id,
+                sent_by=u_admin_metro.id,
+                event_type='EXAM_SCHEDULE',
+                target_role='STUDENT',
+                title='Mid-Term Examination Dates Published',
+                message='The Mid-Term exam window opens on October 10. Check the portal for hall ticket downloads.'
+            )
+        ]
+        session.add_all(notifications)
+        session.flush()
+
         session.commit()
-        print("\n" + "=" * 80)
-        print("  SEEDING COMPLETED SUCCESSFULLY!")
-        print("=" * 80)
 
-        # Print Detailed Summary
-        t_count = session.query(Tenant).count()
-        u_count = session.query(User).count()
-        adm_count = session.query(User).filter(User.role == "ADMIN").count()
-        fac_count = session.query(Faculty).count()
-        stu_count = session.query(Student).count()
-        dept_count = session.query(Department).count()
-        prog_count = session.query(Programme).count()
-        crs_count = session.query(Course).count()
-        off_count = session.query(CourseOffering).count()
-        enr_count = session.query(Enrollment).count()
-        att_count = session.query(Attendance).count()
-        gr_count = session.query(GradeRecord).count()
-        fee_count = session.query(FeeRecord).count()
-        pmt_count = session.query(Payment).count()
+        # ---------------------------------------------------------------------
+        # 14. Seeding Summary Report
+        # ---------------------------------------------------------------------
+        total_tenants = session.query(Tenant).count()
+        total_users = session.query(User).count()
+        total_admins = session.query(User).filter(User.role == 'ADMIN').count()
+        total_faculty = session.query(Faculty).count()
+        total_students = session.query(Student).count()
+        total_depts = session.query(Department).count()
+        total_programmes = session.query(Programme).count()
+        total_courses = session.query(Course).count()
+        total_offerings = session.query(CourseOffering).count()
+        total_enrollments = session.query(Enrollment).count()
+        total_attendance = session.query(Attendance).count()
 
-        print(f"\nEntity Counts in Database:")
-        print(f"  Colleges (Tenants)  : {t_count}")
-        print(f"  Total Users         : {u_count} (Admins: {adm_count}, Faculty: {fac_count}, Students: {stu_count})")
-        print(f"  Departments         : {dept_count}")
-        print(f"  Programmes          : {prog_count}")
-        print(f"  Courses             : {crs_count}")
-        print(f"  Course Offerings    : {off_count}")
-        print(f"  Enrollments         : {enr_count}")
-        print(f"  Attendance Records  : {att_count}")
-        print(f"  Grade Records       : {gr_count}")
-        print(f"  Fee Records         : {fee_count} (Payments: {pmt_count})")
-
-        print("\n" + "-" * 80)
-        print("DEMO CREDENTIALS (All passwords: Password123!)")
-        print("-" * 80)
-        print(f"  Platform Operator: root@nexora.io")
-        print(f"  College 1 Admin  : admin.apex@nexora.edu (Apex Institute of Technology)")
-        print(f"  College 2 Admin  : admin.horizon@nexora.edu (Horizon University)")
-        print(f"  Faculty 1 (HOD)  : prof.menon@apex.edu (Apex - CSE HOD)")
-        print(f"  Faculty 2 (HOD)  : prof.rohan@horizon.edu (Horizon - ITAI HOD)")
-        s1_user = session.get(User, all_seeded_students[0].user_id)
-        s2_user = session.get(User, all_seeded_students[25].user_id)
-        print(f"  Student Sample 1 : {s1_user.email} (Roll: {all_seeded_students[0].roll_no})")
-        print(f"  Student Sample 2 : {s2_user.email} (Roll: {all_seeded_students[25].roll_no})")
-        print("-" * 80 + "\n")
+        print("\n" + "="*70)
+        print("  [+] NEXORA DATABASE SEEDING COMPLETED SUCCESSFULLY")
+        print("="*70)
+        print(f"  * Colleges (Tenants)       : {total_tenants}")
+        print(f"  * Total Users Seeded       : {total_users} (Superadmin + {total_users-1} Campus Users)")
+        print(f"  * Admins                   : {total_admins} (1 per College)")
+        print(f"  * Faculty Members          : {total_faculty} (5 per College)")
+        print(f"  * Students Seeded          : {total_students} (25 per College across Departments)")
+        print(f"  * Departments              : {total_depts}")
+        print(f"  * Academic Programmes      : {total_programmes}")
+        print(f"  * Courses Defined          : {total_courses}")
+        print(f"  * Course Offerings         : {total_offerings}")
+        print(f"  * Student Enrollments      : {total_enrollments}")
+        print(f"  * Attendance Logs          : {total_attendance}")
+        print("="*70)
+        print("  [*] Standard Test Account Credentials:")
+        print("     Default Password: Password123!")
+        print("     - Platform Superadmin : superadmin@nexoracloud.com")
+        print("     - Apex Admin          : admin@apex.edu")
+        print("     - Metro Admin         : admin@metro.edu")
+        print("     - Apex CSE HOD        : hod.cse@apex.edu")
+        print("     - Metro CSE HOD       : hod.cse@metro.edu")
+        print("     - Sample Student Apex : student.aarav.sharma1@apex.edu")
+        print("     - Sample Student Metro: student.aarav.sharma26@metro.edu")
+        print("="*70 + "\n")
 
     except Exception as e:
         session.rollback()
-        print(f"\n[!] ERROR during database seeding: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        raise e
+        logger.error(f"Seeding failed due to error: {e}", exc_info=True)
+        raise
     finally:
         session.close()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Seed NEXORA PostgreSQL Database with realistic multi-tenant data.")
-    parser.add_argument(
-        "--database-url",
-        default=DEFAULT_DATABASE_URL,
-        help=f"PostgreSQL database URL (default: {DEFAULT_DATABASE_URL})",
-    )
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        default=True,
-        help="Wipe and reseed all tables from scratch (default: True)",
-    )
-    parser.add_argument(
-        "--no-clean",
-        dest="clean",
-        action="store_false",
-        help="Do not wipe existing data before seeding",
-    )
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Seed NEXORA PostgreSQL database with realistic dummy data.")
+    parser.add_argument("--db-url", type=str, default=None, help="PostgreSQL connection string (defaults to env or localhost:5432)")
+    parser.add_argument("--no-reset", action="store_true", help="Do not truncate existing data before seeding")
     args = parser.parse_args()
 
-    seed_database(db_url=args.database_url, clean=args.clean)
-
-
-if __name__ == "__main__":
-    main()
+    url = args.db_url or generate_database_url()
+    seed_database(db_url=url, reset=not args.no_reset)
