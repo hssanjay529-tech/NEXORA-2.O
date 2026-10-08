@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEXORA — Student Command Center (Visual Prototype)</title>
+
+  <!-- Google Fonts: Outfit (Headings), Inter (UI/Body), JetBrains Mono (IDs & Data) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Tailwind Configuration matching frontend_spec.md design tokens -->
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            cosmic: {
+              950: '#090611', // Cosmic Void background
+              900: '#130E22', // Deep Nebula card surface
+              850: '#16102B', // Hover card surface
+              800: '#1C1533', // Elevated modal surface
+              700: '#2A2240', // Nebula border tone
+              600: '#3A2E5B', // Accent border
+            },
+            cyan: {
+              DEFAULT: '#00E5FF', // Electric Cyan
+              glow: 'rgba(0, 229, 255, 0.25)',
+              muted: 'rgba(0, 229, 255, 0.12)',
+            },
+            violet: {
+              DEFAULT: '#7C3AED', // Ultraviolet brand secondary
+              glow: 'rgba(124, 58, 237, 0.25)',
+              muted: 'rgba(124, 58, 237, 0.12)',
+            },
+            mint: {
+              DEFAULT: '#10B981', // Success accent
+              glow: 'rgba(16, 185, 129, 0.25)',
+              muted: 'rgba(16, 185, 129, 0.12)',
+            },
+            amber: {
+              DEFAULT: '#F59E0B',
+              glow: 'rgba(245, 158, 11, 0.25)',
+            },
+            crimson: {
+              DEFAULT: '#EF4444',
+              glow: 'rgba(239, 68, 68, 0.25)',
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            display: ['Outfit', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          boxShadow: {
+            'glow-cyan': '0 0 25px -5px rgba(0, 229, 255, 0.35)',
+            'glow-violet': '0 0 25px -5px rgba(124, 58, 237, 0.35)',
+            'glass-card': '0 8px 32px 0 rgba(0, 0, 0, 0.45)',
+            'glass-elevated': '0 12px 40px -10px rgba(0, 0, 0, 0.7)',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #090611;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #2A2240;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #00E5FF;
+    }
+
+    /* Ambient background mesh */
+    .cosmic-mesh {
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(124, 58, 237, 0.15) 0px, transparent 50%),
+        radial-gradient(at 100% 0%, rgba(0, 229, 255, 0.12) 0px, transparent 50%),
+        radial-gradient(at 50% 100%, rgba(124, 58, 237, 0.10) 0px, transparent 50%);
+    }
+
+    /* Tree branch connector lines for BranchedMenu */
+    .branch-connector {
+      position: relative;
+    }
+    .branch-connector::before {
+      content: '';
+      position: absolute;
+      left: 1.15rem;
+      top: 0;
+      bottom: 0.5rem;
+      width: 1px;
+      background: linear-gradient(180deg, #2A2240 0%, #7C3AED 50%, rgba(0, 229, 255, 0.4) 100%);
+    }
+
+    .branch-item {
+      position: relative;
+    }
+    .branch-item::before {
+      content: '';
+      position: absolute;
+      left: -1.35rem;
+      top: 50%;
+      width: 1rem;
+      height: 1px;
+      background: #2A2240;
+    }
+    .branch-item.active::before {
+      background: #00E5FF;
+      box-shadow: 0 0 8px #00E5FF;
+    }
+
+    /* Glass Prism effect */
+    .prism-glass {
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.01) 100%);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .prism-glass:hover {
+      border-color: rgba(0, 229, 255, 0.35);
+      background: linear-gradient(135deg, rgba(0, 229, 255, 0.08) 0%, rgba(124, 58, 237, 0.05) 100%);
+    }
+  </style>
+</head>
+<body class="bg-cosmic-950 text-slate-100 font-sans antialiased cosmic-mesh min-h-screen flex selection:bg-cyan selection:text-black">
+
+  <!-- ========================================================================= -->
+  <!-- 1. LEFT SIDEBAR: BranchedMenu Navigation System                           -->
+  <!-- ========================================================================= -->
+  <aside class="w-72 shrink-0 border-r border-cosmic-700/70 bg-cosmic-950/80 backdrop-blur-xl flex flex-col justify-between fixed top-0 bottom-0 left-0 z-40 transition-all duration-300">
+    
+    <!-- Top Branding & Institution Identity -->
+    <div>
+      <div class="p-6 border-b border-cosmic-700/50 flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+          <!-- NEXORA Glowing Emblem -->
+          <div class="relative w-10 h-10 rounded-xl bg-gradient-to-tr from-violet via-cyan to-white p-[1px] shadow-glow-cyan flex items-center justify-center">
+            <div class="w-full h-full bg-cosmic-950 rounded-[11px] flex items-center justify-center overflow-hidden">
+              <svg class="w-6 h-6 text-cyan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3" class="fill-cyan/30 text-cyan"></circle>
+                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+              </svg>
+            </div>
+          </div>
+          <div>
+            <div class="flex items-center space-x-1.5">
+              <span class="font-display font-extrabold text-xl tracking-wider text-white">NEXORA</span>
+              <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan/15 text-cyan border border-cyan/30">STUDENT</span>
+            </div>
+            <p class="text-[11px] text-slate-400 font-mono tracking-tight">APEX INST. OF TECH</p>
+          </div>
+        </div>
+
+        <!-- Academic Term Chip -->
+        <span class="relative flex h-2 w-2">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-mint opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2 w-2 bg-mint"></span>
+        </span>
+      </div>
+
+      <!-- Navigation Links (Branched Circuit Tree) -->
+      <nav class="p-4 space-y-6 overflow-y-auto max-h-[calc(100vh-210px)] text-sm">
+        
+        <!-- Primary Hub -->
+        <div>
+          <div class="text-[11px] font-mono uppercase tracking-wider text-slate-400 px-3 mb-2 font-medium">Core Portal</div>
+          <div class="space-y-1">
+            <a href="#" class="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gradient-to-r from-cyan/15 to-transparent text-cyan border border-cyan/30 shadow-glow-cyan font-medium group">
+              <div class="flex items-center space-x-3">
+                <svg class="w-4 h-4 text-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                </svg>
+                <span>Dashboard</span>
+              </div>
+              <span class="w-1.5 h-1.5 rounded-full bg-cyan shadow-[0_0_8px_#00E5FF]"></span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Academic Cluster (BranchedMenu Structure) -->
+        <div>
+          <div class="text-[11px] font-mono uppercase tracking-wider text-slate-400 px-3 mb-2 font-medium">Academics</div>
+          
+          <div class="branch-connector ml-3 pl-6 space-y-1">
+            <!-- Branch 1 -->
+            <a href="#" class="branch-item active flex items-center justify-between px-2.5 py-2 rounded-md text-slate-200 hover:text-cyan hover:bg-cosmic-900 transition-colors">
+              <span class="text-xs font-medium">Attendance Matrix</span>
+              <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-mint/15 text-mint border border-mint/30">87.4%</span>
+            </a>
+            <!-- Branch 2 -->
+            <a href="#" class="branch-item flex items-center justify-between px-2.5 py-2 rounded-md text-slate-300 hover:text-cyan hover:bg-cosmic-900 transition-colors">
+              <span class="text-xs font-medium">Course Timetable</span>
+              <span class="text-[10px] font-mono text-slate-400">Live</span>
+            </a>
+            <!-- Branch 3 -->
+            <a href="#" class="branch-item flex items-center justify-between px-2.5 py-2 rounded-md text-slate-300 hover:text-cyan hover:bg-cosmic-900 transition-colors">
+              <span class="text-xs font-medium">Study Vault & Notes</span>
+              <span class="text-[10px] font-mono text-slate-400">42 files</span>
+            </a>
+            <!-- Branch 4 -->
+            <a href="#" class="branch-item flex items-center justify-between px-2.5 py-2 rounded-md text-slate-300 hover:text-cyan hover:bg-cosmic-900 transition-colors">
+              <span class="text-xs font-medium">Assignments & Lab</span>
+              <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-crimson/15 text-crimson border border-crimson/30">3 Due</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Examinations Cluster -->
+        <div>
+          <div class="text-[11px] font-mono uppercase tracking-wider text-slate-400 px-3 mb-2 font-medium">Examinations</div>
+          <div class="branch-connector ml-3 pl-6 space-y-1">
+            <a href="#" class="branch-item flex items-center justify-between px-2.5 py-2 rounded-md text-slate-300 hover:text-violet transition-colors">
+              <span class="text-xs font-medium">Hall Ticket & Seating</span>
+              <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-violet/20 text-violet border border-violet/30">Issued</span>
+            </a>
+            <a href="#" class="branch-item flex items-center justify-between px-2.5 py-2 rounded-md text-slate-300 hover:text-cyan transition-colors">
+              <span class="text-xs font-medium">Grades & SGPA Ledger</span>
+              <span class="text-[10px] font-mono text-slate-400">Sem I-III</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Finance & Services Cluster -->
+        <div>
+          <div class="text-[11px] font-mono uppercase tracking-wider text-slate-400 px-3 mb-2 font-medium">Finance & Campus</div>
+          <div class="branch-connector ml-3 pl-6 space-y-1">
+            <a href="#" class="branch-item flex items-center justify-between px-2.5 py-2 rounded-md text-slate-300 hover:text-amber transition-colors">
+              <span class="text-xs font-medium">Fee Invoices & Dues</span>
+              <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber/20 text-amber border border-amber/30">Payable</span>
+            </a>
+            <a href="#" class="branch-item flex items-center justify-between px-2.5 py-2 rounded-md text-slate-300 hover:text-cyan transition-colors">
+              <span class="text-xs font-medium">Digital Receipts</span>
+              <span class="text-[10px] font-mono text-slate-400">PDF</span>
+            </a>
+            <a href="#" class="branch-item flex items-center justify-between px-2.5 py-2 rounded-md text-slate-300 hover:text-cyan transition-colors">
+              <span class="text-xs font-medium">Helpdesk Grievances</span>
+            </a>
+          </div>
+        </div>
+
+      </nav>
+    </div>
+
+    <!-- Bottom Student Profile Chip -->
+    <div class="p-4 border-t border-cosmic-700/60 bg-cosmic-900/40">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+          <div class="relative">
+            <div class="w-10 h-10 rounded-full bg-gradient-to-tr from-cyan via-violet to-purple-400 p-[1.5px]">
+              <div class="w-full h-full rounded-full bg-cosmic-900 flex items-center justify-center font-display font-semibold text-xs text-white">
+                AS
+              </div>
+            </div>
+            <span class="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-mint border-2 border-cosmic-950"></span>
+          </div>
+          <div>
+            <div class="text-xs font-medium text-white">Aarav Sharma</div>
+            <div class="text-[11px] font-mono text-slate-400">APEX-24-CS-042</div>
+          </div>
+        </div>
+        <button title="Settings" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-cosmic-800 transition-colors">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ========================================================================= -->
+  <!-- 2. MAIN APPLICATION WORKSPACE                                             -->
+  <!-- ========================================================================= -->
+  <div class="flex-1 ml-72 flex flex-col min-h-screen">
+    
+    <!-- Top Floating Header Bar -->
+    <header class="h-16 border-b border-cosmic-700/60 bg-cosmic-950/70 backdrop-blur-md sticky top-0 z-30 px-8 flex items-center justify-between">
+      
+      <!-- Search Input with Command Bar Shortcut -->
+      <div class="relative w-96">
+        <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+          <svg class="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </div>
+        <input 
+          type="text" 
+          placeholder="Search subjects, faculty, schedule (e.g. CS-301)..." 
+          readonly
+          class="w-full bg-cosmic-900/80 border border-cosmic-700 text-xs rounded-xl pl-9 pr-14 py-2 text-slate-200 placeholder-slate-400 focus:outline-none focus:border-cyan/50 focus:ring-1 focus:ring-cyan/30 cursor-default"
+        >
+        <div class="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none">
+          <kbd class="text-[10px] font-mono bg-cosmic-800 text-slate-400 border border-cosmic-700 px-1.5 py-0.5 rounded shadow-sm">⌘K</kbd>
+        </div>
+      </div>
+
+      <!-- Right Header Actions -->
+      <div class="flex items-center space-x-4">
+        <!-- Semester Badge Selector -->
+        <div class="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-cosmic-900 border border-cosmic-700 text-xs text-slate-300">
+          <svg class="w-3.5 h-3.5 text-cyan" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+          <span class="font-medium text-slate-200">Spring Term 2026</span>
+          <span class="text-[10px] font-mono text-cyan bg-cyan/10 px-1 rounded">Sem 4</span>
+        </div>
+
+        <!-- BellToggle Notification Micro-Component Representation -->
+        <button class="relative p-2 rounded-xl bg-cosmic-900 border border-cosmic-700 hover:border-cyan/50 text-slate-300 hover:text-cyan transition-all">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+          </svg>
+          <!-- Unread Indicator Badge -->
+          <span class="absolute top-1.5 right-1.5 flex h-2 w-2">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2 w-2 bg-cyan"></span>
+          </span>
+        </button>
+
+        <!-- Quick Fee Settlement Alert Pill -->
+        <div class="flex items-center space-x-2 pl-3 border-l border-cosmic-700">
+          <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-amber/15 text-amber border border-amber/30 flex items-center space-x-1.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber animate-pulse"></span>
+            <span>Fee Due: ₹24,500</span>
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Scrollable Dashboard Content -->
+    <main class="flex-1 p-8 space-y-8 max-w-7xl mx-auto w-full">
+      
+      <!-- ===================================================================== -->
+      <!-- 3. HERO SECTION: ProfileCard & Holistic Academic Snapshot             -->
+      <!-- ===================================================================== -->
+      <section class="relative rounded-2xl bg-gradient-to-r from-cosmic-900 via-cosmic-850 to-cosmic-900 border border-cosmic-700/80 p-6 md:p-8 shadow-glass-card overflow-hidden">
+        <!-- Ambient Background Glows -->
+        <div class="absolute -top-24 -right-24 w-80 h-80 bg-violet/20 rounded-full blur-3xl pointer-events-none"></div>
+        <div class="absolute -bottom-24 -left-24 w-80 h-80 bg-cyan/15 rounded-full blur-3xl pointer-events-none"></div>
+
+        <div class="relative z-10 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+          
+          <!-- Student Identity Block -->
+          <div class="flex items-center space-x-6">
+            <!-- 3D Profile Avatar Badge -->
+            <div class="relative shrink-0">
+              <div class="w-20 h-20 rounded-2xl bg-gradient-to-br from-cyan via-violet to-pink-500 p-[2px] shadow-glow-cyan">
+                <div class="w-full h-full bg-cosmic-950 rounded-[14px] flex items-center justify-center overflow-hidden relative">
+                  <!-- Styled avatar monogram / silhouette -->
+                  <div class="font-display font-black text-2xl bg-gradient-to-r from-cyan to-white bg-clip-text text-transparent">AS</div>
+                  <div class="absolute inset-0 bg-cyan/10 backdrop-blur-[1px]"></div>
+                </div>
+              </div>
+              <div class="absolute -bottom-1 -right-1 px-1.5 py-0.5 rounded-md bg-cosmic-900 border border-mint/40 text-[10px] font-mono text-mint flex items-center space-x-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-mint"></span>
+                <span>REGULAR</span>
+              </div>
+            </div>
+
+            <!-- Profile Info -->
+            <div class="space-y-1">
+              <div class="flex items-center space-x-3">
+                <h1 class="text-2xl md:text-3xl font-display font-bold text-white tracking-tight">Aarav Sharma</h1>
+                <span class="px-2 py-0.5 rounded-md bg-cyan/10 border border-cyan/30 text-cyan text-xs font-mono font-medium">B.TECH CSE</span>
+              </div>
+              <p class="text-sm text-slate-300">
+                Department of Computer Science & Engineering <span class="text-slate-400">• Semester IV</span>
+              </p>
+              <div class="flex flex-wrap items-center gap-3 pt-1 text-xs text-slate-400 font-mono">
+                <span class="flex items-center space-x-1">
+                  <span class="text-slate-400">Roll:</span>
+                  <span class="text-slate-200">APEX-2024-CSE-042</span>
+                </span>
+                <span>•</span>
+                <span class="flex items-center space-x-1">
+                  <span class="text-slate-400">Advisor:</span>
+                  <span class="text-slate-200">Dr. Priya Nair</span>
+                </span>
+                <span>•</span>
+                <span class="text-mint flex items-center space-x-1">
+                  <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                  </svg>
+                  <span>Dean's Honor List</span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Academic KPIs (4 Glass Tiles) -->
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 w-full lg:w-auto">
+            
+            <!-- CGPA Metric -->
+            <div class="px-4 py-3 rounded-xl bg-cosmic-950/60 border border-cosmic-700/80 backdrop-blur-sm text-center">
+              <div class="text-[11px] font-mono uppercase text-slate-400">Cumulative GPA</div>
+              <div class="text-xl font-display font-bold text-white mt-0.5 flex items-baseline justify-center space-x-1">
+                <span class="text-cyan">8.92</span>
+                <span class="text-xs text-slate-400">/ 10</span>
+              </div>
+              <div class="text-[10px] text-mint font-medium mt-0.5">Top 4% Cohort</div>
+            </div>
+
+            <!-- Attendance Metric -->
+            <div class="px-4 py-3 rounded-xl bg-cosmic-950/60 border border-cosmic-700/80 backdrop-blur-sm text-center">
+              <div class="text-[11px] font-mono uppercase text-slate-400">Overall Attendance</div>
+              <div class="text-xl font-display font-bold text-mint mt-0.5">87.4%</div>
+              <div class="text-[10px] text-slate-400 font-mono mt-0.5">Req: ≥ 75.0%</div>
+            </div>
+
+            <!-- Earned Credits -->
+            <div class="px-4 py-3 rounded-xl bg-cosmic-950/60 border border-cosmic-700/80 backdrop-blur-sm text-center">
+              <div class="text-[11px] font-mono uppercase text-slate-400">Credits Earned</div>
+              <div class="text-xl font-display font-bold text-white mt-0.5 flex items-baseline justify-center space-x-1">
+                <span>84</span>
+                <span class="text-xs text-slate-400">/ 160</span>
+              </div>
+              <div class="text-[10px] text-violet font-medium mt-0.5">52.5% Completed</div>
+            </div>
+
+            <!-- Academic Standing -->
+            <div class="px-4 py-3 rounded-xl bg-cosmic-950/60 border border-cosmic-700/80 backdrop-blur-sm text-center">
+              <div class="text-[11px] font-mono uppercase text-slate-400">Scholarship</div>
+              <div class="text-xl font-display font-bold text-amber mt-0.5">30%</div>
+              <div class="text-[10px] text-slate-300 font-medium mt-0.5">Merit Waiver</div>
+            </div>
+
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ===================================================================== -->
+      <!-- 4. QUICK-ACTION LAUNCHPAD: GlassIcons 6-Tile Grid                     -->
+      <!-- ===================================================================== -->
+      <section class="space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xs font-mono uppercase tracking-widest text-slate-400 flex items-center space-x-2">
+            <span>QUICK LAUNCHPAD</span>
+            <span class="w-8 h-[1px] bg-cosmic-700"></span>
+          </h2>
+          <span class="text-xs text-slate-400">6 Shortcuts Available</span>
+        </div>
+
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          
+          <!-- Tile 1: Attendance Register -->
+          <div class="prism-glass p-4 rounded-xl cursor-pointer group transition-all duration-300 hover:-translate-y-1 hover:shadow-glow-cyan">
+            <div class="w-10 h-10 rounded-xl bg-cyan/15 border border-cyan/30 flex items-center justify-center text-cyan mb-3 group-hover:scale-110 transition-transform">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div class="font-display font-semibold text-sm text-white group-hover:text-cyan transition-colors">Attendance</div>
+            <div class="text-[11px] text-slate-400 mt-0.5">6 Enrolled Courses</div>
+            <div class="mt-2 text-[10px] font-mono text-mint flex items-center space-x-1">
+              <span>●</span>
+              <span>All Eligible</span>
+            </div>
+          </div>
+
+          <!-- Tile 2: Live Timetable -->
+          <div class="prism-glass p-4 rounded-xl cursor-pointer group transition-all duration-300 hover:-translate-y-1 hover:shadow-glow-cyan">
+            <div class="w-10 h-10 rounded-xl bg-violet/15 border border-violet/30 flex items-center justify-center text-violet mb-3 group-hover:scale-110 transition-transform">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div class="font-display font-semibold text-sm text-white group-hover:text-violet transition-colors">Timetable</div>
+            <div class="text-[11px] text-slate-400 mt-0.5">Wednesday Grid</div>
+            <div class="mt-2 text-[10px] font-mono text-cyan flex items-center space-x-1">
+              <span>Next: 11:00 AM</span>
+            </div>
+          </div>
+
+          <!-- Tile 3: Exam Grades & Hall Ticket -->
+          <div class="prism-glass p-4 rounded-xl cursor-pointer group transition-all duration-300 hover:-translate-y-1 hover:shadow-glow-cyan">
+            <div class="w-10 h-10 rounded-xl bg-cyan/15 border border-cyan/30 flex items-center justify-center text-cyan mb-3 group-hover:scale-110 transition-transform">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+            <div class="font-display font-semibold text-sm text-white group-hover:text-cyan transition-colors">Examinations</div>
+            <div class="text-[11px] text-slate-400 mt-0.5">Mid-Sem Spring</div>
+            <div class="mt-2 text-[10px] font-mono text-violet flex items-center space-x-1">
+              <span>Hall Ticket Ready</span>
+            </div>
+          </div>
+
+          <!-- Tile 4: Fees & Online Payment -->
+          <div class="prism-glass p-4 rounded-xl cursor-pointer group transition-all duration-300 hover:-translate-y-1 hover:shadow-glow-cyan">
+            <div class="w-10 h-10 rounded-xl bg-amber/15 border border-amber/30 flex items-center justify-center text-amber mb-3 group-hover:scale-110 transition-transform">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+              </svg>
+            </div>
+            <div class="font-display font-semibold text-sm text-white group-hover:text-amber transition-colors">Fee Ledger</div>
+            <div class="text-[11px] text-slate-400 mt-0.5">Installment II</div>
+            <div class="mt-2 text-[10px] font-mono text-amber flex items-center space-x-1">
+              <span>₹24,500 Dues</span>
+            </div>
+          </div>
+
+          <!-- Tile 5: Assignments & Lab Work -->
+          <div class="prism-glass p-4 rounded-xl cursor-pointer group transition-all duration-300 hover:-translate-y-1 hover:shadow-glow-cyan">
+            <div class="w-10 h-10 rounded-xl bg-crimson/15 border border-crimson/30 flex items-center justify-center text-crimson mb-3 group-hover:scale-110 transition-transform">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+              </svg>
+            </div>
+            <div class="font-display font-semibold text-sm text-white group-hover:text-crimson transition-colors">Assignments</div>
+            <div class="text-[11px] text-slate-400 mt-0.5">3 Submissions</div>
+            <div class="mt-2 text-[10px] font-mono text-crimson flex items-center space-x-1">
+              <span>1 Due Tonight</span>
+            </div>
+          </div>
+
+          <!-- Tile 6: Academic Vault & Notes -->
+          <div class="prism-glass p-4 rounded-xl cursor-pointer group transition-all duration-300 hover:-translate-y-1 hover:shadow-glow-cyan">
+            <div class="w-10 h-10 rounded-xl bg-mint/15 border border-mint/30 flex items-center justify-center text-mint mb-3 group-hover:scale-110 transition-transform">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+            <div class="font-display font-semibold text-sm text-white group-hover:text-mint transition-colors">Study Vault</div>
+            <div class="text-[11px] text-slate-400 mt-0.5">Faculty Uploads</div>
+            <div class="mt-2 text-[10px] font-mono text-slate-400 flex items-center space-x-1">
+              <span>FolderFloat Micro</span>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ===================================================================== -->
+      <!-- 5. MAIN SPLIT GRID: Academic Attendance vs Live Timeline              -->
+      <!-- ===================================================================== -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        
+        <!-- LEFT 7 COLUMNS: Course Attendance Breakdown & SGPA Progress -->
+        <div class="lg:col-span-7 space-y-8">
+          
+          <!-- Course-Level Attendance Matrix (Screen STU-3) -->
+          <div class="rounded-2xl bg-cosmic-900/90 border border-cosmic-700/80 p-6 shadow-glass-card">
+            <div class="flex items-center justify-between pb-5 border-b border-cosmic-700/60">
+              <div>
+                <div class="flex items-center space-x-2">
+                  <h2 class="font-display font-bold text-lg text-white">Course Attendance & Eligibility</h2>
+                  <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-mint/15 text-mint border border-mint/30">BR-07 ENFORCED</span>
+                </div>
+                <p class="text-xs text-slate-400 mt-1">Minimum 75.0% mandatory for End-Semester Examination Hall Ticket</p>
+              </div>
+              <button class="text-xs text-cyan hover:underline font-mono">View Full Ledger →</button>
+            </div>
+
+            <!-- Course Attendance Cards List -->
+            <div class="mt-5 space-y-4">
+              
+              <!-- Course 1: CS-301 -->
+              <div class="p-4 rounded-xl bg-cosmic-950/60 border border-cosmic-700/70 hover:border-cyan/40 transition-all space-y-3">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <div class="flex items-center space-x-2">
+                      <span class="font-mono text-xs font-semibold text-cyan">CS-301</span>
+                      <h3 class="text-sm font-semibold text-white">Advanced Data Structures & Algorithms</h3>
+                    </div>
+                    <div class="text-xs text-slate-400 mt-0.5">Faculty: Dr. Priya Nair • 4 Credits</div>
+                  </div>
+                  <span class="px-2.5 py-1 rounded-full text-[11px] font-medium bg-mint/15 text-mint border border-mint/30 flex items-center space-x-1 shadow-sm">
+                    <span>✓</span>
+                    <span>Exam Eligible (91.9%)</span>
+                  </span>
+                </div>
+                <!-- Percentage Meter -->
+                <div>
+                  <div class="flex justify-between text-xs font-mono text-slate-400 mb-1.5">
+                    <span>Attended: <b class="text-slate-200">34</b> / 37 sessions</span>
+                    <span class="text-mint font-semibold">91.9%</span>
+                  </div>
+                  <div class="w-full bg-cosmic-800 rounded-full h-2 overflow-hidden">
+                    <div class="bg-gradient-to-r from-cyan to-mint h-2 rounded-full" style="width: 91.9%"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Course 2: CS-304 -->
+              <div class="p-4 rounded-xl bg-cosmic-950/60 border border-cosmic-700/70 hover:border-cyan/40 transition-all space-y-3">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <div class="flex items-center space-x-2">
+                      <span class="font-mono text-xs font-semibold text-cyan">CS-304</span>
+                      <h3 class="text-sm font-semibold text-white">Database Systems Architecture</h3>
+                    </div>
+                    <div class="text-xs text-slate-400 mt-0.5">Faculty: Prof. K. Venkatesh • 4 Credits</div>
+                  </div>
+                  <span class="px-2.5 py-1 rounded-full text-[11px] font-medium bg-mint/15 text-mint border border-mint/30 flex items-center space-x-1 shadow-sm">
+                    <span>✓</span>
+                    <span>Exam Eligible (86.1%)</span>
+                  </span>
+                </div>
+                <div>
+                  <div class="flex justify-between text-xs font-mono text-slate-400 mb-1.5">
+                    <span>Attended: <b class="text-slate-200">31</b> / 36 sessions</span>
+                    <span class="text-mint font-semibold">86.1%</span>
+                  </div>
+                  <div class="w-full bg-cosmic-800 rounded-full h-2 overflow-hidden">
+                    <div class="bg-gradient-to-r from-cyan to-mint h-2 rounded-full" style="width: 86.1%"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Course 3: CS-308 (ATTENDANCE WARNING CASE - Visual Mock of Under-75% Risk) -->
+              <div class="p-4 rounded-xl bg-cosmic-950/60 border border-amber/40 bg-gradient-to-r from-amber/5 via-transparent to-transparent space-y-3">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <div class="flex items-center space-x-2">
+                      <span class="font-mono text-xs font-semibold text-amber">CS-308</span>
+                      <h3 class="text-sm font-semibold text-white">Operating Systems & Kernel Internals</h3>
+                    </div>
+                    <div class="text-xs text-slate-400 mt-0.5">Faculty: Prof. Vikram Rao • 4 Credits</div>
+                  </div>
+                  <span class="px-2.5 py-1 rounded-full text-[11px] font-medium bg-amber/20 text-amber border border-amber/40 flex items-center space-x-1 shadow-sm animate-pulse">
+                    <span>⚠️</span>
+                    <span>At Risk (71.4%)</span>
+                  </span>
+                </div>
+                <div>
+                  <div class="flex justify-between text-xs font-mono text-slate-400 mb-1.5">
+                    <span>Attended: <b class="text-slate-200">25</b> / 35 sessions</span>
+                    <span class="text-amber font-semibold">71.4% (&lt; 75%)</span>
+                  </div>
+                  <div class="w-full bg-cosmic-800 rounded-full h-2 overflow-hidden">
+                    <div class="bg-gradient-to-r from-amber to-crimson h-2 rounded-full" style="width: 71.4%"></div>
+                  </div>
+                </div>
+                <!-- Warning Remediation Note from Frontend Spec -->
+                <div class="p-2.5 rounded-lg bg-amber/10 border border-amber/20 flex items-center space-x-2 text-xs text-amber-200">
+                  <svg class="w-4 h-4 text-amber shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span><strong>Eligibility Flag:</strong> You must attend the next <strong>3 consecutive lectures</strong> to cross the 75% threshold before Mid-Sem.</span>
+                </div>
+              </div>
+
+              <!-- Course 4: MA-202 -->
+              <div class="p-4 rounded-xl bg-cosmic-950/60 border border-cosmic-700/70 hover:border-cyan/40 transition-all space-y-3">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <div class="flex items-center space-x-2">
+                      <span class="font-mono text-xs font-semibold text-cyan">MA-202</span>
+                      <h3 class="text-sm font-semibold text-white">Discrete Mathematics & Graph Theory</h3>
+                    </div>
+                    <div class="text-xs text-slate-400 mt-0.5">Faculty: Dr. Anita Desai • 3 Credits</div>
+                  </div>
+                  <span class="px-2.5 py-1 rounded-full text-[11px] font-medium bg-mint/15 text-mint border border-mint/30 flex items-center space-x-1 shadow-sm">
+                    <span>✓</span>
+                    <span>Exam Eligible (79.4%)</span>
+                  </span>
+                </div>
+                <div>
+                  <div class="flex justify-between text-xs font-mono text-slate-400 mb-1.5">
+                    <span>Attended: <b class="text-slate-200">27</b> / 34 sessions</span>
+                    <span class="text-mint font-semibold">79.4%</span>
+                  </div>
+                  <div class="w-full bg-cosmic-800 rounded-full h-2 overflow-hidden">
+                    <div class="bg-gradient-to-r from-cyan to-mint h-2 rounded-full" style="width: 79.4%"></div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Academic Progression & SGPA History (STU-07) -->
+          <div class="rounded-2xl bg-cosmic-900/90 border border-cosmic-700/80 p-6 shadow-glass-card">
+            <div class="flex items-center justify-between pb-4 border-b border-cosmic-700/60">
+              <div>
+                <h2 class="font-display font-bold text-base text-white">Academic Progression & SGPA Curve</h2>
+                <p class="text-xs text-slate-400 mt-0.5">Historical GPA performance across evaluated semesters</p>
+              </div>
+              <div class="flex items-center space-x-2 text-xs font-mono">
+                <span class="flex items-center space-x-1">
+                  <span class="w-2.5 h-2.5 rounded-sm bg-cyan"></span>
+                  <span class="text-slate-300">Actual SGPA</span>
+                </span>
+                <span class="flex items-center space-x-1 ml-3">
+                  <span class="w-2.5 h-2.5 rounded-sm bg-violet"></span>
+                  <span class="text-slate-300">Target (9.0+)</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- Simulated Visual Bar Chart Grid -->
+            <div class="mt-6 grid grid-cols-4 gap-4 items-end h-40 pt-4 px-2">
+              
+              <!-- Sem 1 -->
+              <div class="flex flex-col items-center h-full justify-end group">
+                <span class="text-xs font-mono text-cyan mb-1.5 font-bold">8.42</span>
+                <div class="w-full bg-cosmic-800/80 rounded-t-lg relative overflow-hidden" style="height: 75%">
+                  <div class="absolute inset-0 bg-gradient-to-t from-violet/40 to-cyan/80 group-hover:to-cyan transition-all"></div>
+                </div>
+                <span class="text-xs font-mono text-slate-400 mt-2">Sem I</span>
+              </div>
+
+              <!-- Sem 2 -->
+              <div class="flex flex-col items-center h-full justify-end group">
+                <span class="text-xs font-mono text-cyan mb-1.5 font-bold">8.70</span>
+                <div class="w-full bg-cosmic-800/80 rounded-t-lg relative overflow-hidden" style="height: 82%">
+                  <div class="absolute inset-0 bg-gradient-to-t from-violet/40 to-cyan/80 group-hover:to-cyan transition-all"></div>
+                </div>
+                <span class="text-xs font-mono text-slate-400 mt-2">Sem II</span>
+              </div>
+
+              <!-- Sem 3 -->
+              <div class="flex flex-col items-center h-full justify-end group">
+                <span class="text-xs font-mono text-cyan mb-1.5 font-bold">8.88</span>
+                <div class="w-full bg-cosmic-800/80 rounded-t-lg relative overflow-hidden" style="height: 88%">
+                  <div class="absolute inset-0 bg-gradient-to-t from-violet/40 to-cyan/80 group-hover:to-cyan transition-all"></div>
+                </div>
+                <span class="text-xs font-mono text-slate-400 mt-2">Sem III</span>
+              </div>
+
+              <!-- Sem 4 (Projected / In Progress) -->
+              <div class="flex flex-col items-center h-full justify-end group">
+                <div class="flex items-center space-x-1 mb-1.5">
+                  <span class="text-xs font-mono text-mint font-bold">8.92</span>
+                  <span class="text-[9px] font-mono px-1 rounded bg-mint/20 text-mint">EST</span>
+                </div>
+                <div class="w-full bg-cosmic-800/80 rounded-t-lg relative overflow-hidden border-2 border-dashed border-cyan/60" style="height: 90%">
+                  <div class="absolute inset-0 bg-gradient-to-t from-cyan/30 to-mint/60 group-hover:to-mint transition-all"></div>
+                </div>
+                <span class="text-xs font-mono text-cyan mt-2 font-semibold">Sem IV (Now)</span>
+              </div>
+
+            </div>
+
+            <!-- Credits Completed Bar -->
+            <div class="mt-6 pt-4 border-t border-cosmic-700/60 flex items-center justify-between">
+              <div>
+                <span class="text-xs text-slate-400">Graduation Audit Status:</span>
+                <span class="text-xs text-slate-200 font-medium ml-1">84 Completed + 20 Current Sem = 104 / 160 Credits</span>
+              </div>
+              <span class="text-xs font-mono text-mint">65% Pace</span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- RIGHT 5 COLUMNS: Today's Schedule Timeline & Action Center -->
+        <div class="lg:col-span-5 space-y-8">
+          
+          <!-- Today's Schedule Live Timeline (Screen STU-3) -->
+          <div class="rounded-2xl bg-cosmic-900/90 border border-cosmic-700/80 p-6 shadow-glass-card">
+            <div class="flex items-center justify-between pb-4 border-b border-cosmic-700/60">
+              <div>
+                <h2 class="font-display font-bold text-base text-white">Today's Class Schedule</h2>
+                <p class="text-xs text-slate-400 mt-0.5">Wednesday • 4 Lectures Scheduled</p>
+              </div>
+              <span class="text-xs font-mono px-2 py-0.5 rounded bg-cosmic-800 text-cyan border border-cosmic-700">08 OCT 2026</span>
+            </div>
+
+            <div class="mt-5 space-y-4 relative">
+              
+              <!-- Timeline Item 1: Completed -->
+              <div class="flex space-x-3 opacity-60">
+                <div class="flex flex-col items-center">
+                  <div class="w-6 h-6 rounded-full bg-cosmic-800 border border-cosmic-700 flex items-center justify-center text-[10px] text-slate-400">✓</div>
+                  <div class="w-[1px] h-full bg-cosmic-700 my-1"></div>
+                </div>
+                <div class="flex-1 pb-4">
+                  <div class="text-[11px] font-mono text-slate-400">09:00 AM – 10:30 AM • LECTURE HALL 402</div>
+                  <div class="text-sm font-semibold text-slate-300">CS-301: Advanced Data Structures</div>
+                  <div class="text-xs text-slate-400">Dr. Priya Nair • Marked Present</div>
+                </div>
+              </div>
+
+              <!-- Timeline Item 2: ACTIVE NOW -->
+              <div class="flex space-x-3">
+                <div class="flex flex-col items-center">
+                  <div class="w-6 h-6 rounded-full bg-cyan/20 border border-cyan flex items-center justify-center shadow-glow-cyan">
+                    <span class="w-2 h-2 rounded-full bg-cyan animate-ping"></span>
+                  </div>
+                  <div class="w-[1px] h-full bg-cyan/40 my-1"></div>
+                </div>
+                <div class="flex-1 pb-4 p-3 rounded-xl bg-gradient-to-r from-cyan/10 to-transparent border border-cyan/40 shadow-glow-cyan">
+                  <div class="flex items-center justify-between text-[11px] font-mono text-cyan mb-1">
+                    <span>11:00 AM – 12:30 PM (LIVE NOW)</span>
+                    <span class="px-1.5 py-0.5 rounded bg-cyan/20 text-cyan text-[10px]">ROOM LAB-03</span>
+                  </div>
+                  <div class="text-sm font-bold text-white">CS-308: Operating Systems Lab</div>
+                  <div class="text-xs text-slate-300 mt-1">Prof. Vikram Rao • Hands-on POSIX Threads</div>
+                </div>
+              </div>
+
+              <!-- Timeline Item 3: Upcoming -->
+              <div class="flex space-x-3">
+                <div class="flex flex-col items-center">
+                  <div class="w-6 h-6 rounded-full bg-cosmic-800 border border-cosmic-700 flex items-center justify-center text-[10px] text-slate-400 font-mono">3</div>
+                  <div class="w-[1px] h-full bg-cosmic-700 my-1"></div>
+                </div>
+                <div class="flex-1 pb-4">
+                  <div class="text-[11px] font-mono text-slate-400">02:00 PM – 03:30 PM • SEMINAR HALL 101</div>
+                  <div class="text-sm font-semibold text-slate-200">MA-202: Discrete Mathematics</div>
+                  <div class="text-xs text-slate-400">Dr. Anita Desai • Combinatorics</div>
+                </div>
+              </div>
+
+              <!-- Timeline Item 4: Upcoming -->
+              <div class="flex space-x-3">
+                <div class="flex flex-col items-center">
+                  <div class="w-6 h-6 rounded-full bg-cosmic-800 border border-cosmic-700 flex items-center justify-center text-[10px] text-slate-400 font-mono">4</div>
+                </div>
+                <div class="flex-1">
+                  <div class="text-[11px] font-mono text-slate-400">04:00 PM – 05:00 PM • AUDITORIUM</div>
+                  <div class="text-sm font-semibold text-slate-200">Industry Keynote: Quantum Comp.</div>
+                  <div class="text-xs text-slate-400">Invited Speaker • Open to All</div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Pending Coursework & Quizzes (Screen STU-4) -->
+          <div class="rounded-2xl bg-cosmic-900/90 border border-cosmic-700/80 p-6 shadow-glass-card">
+            <div class="flex items-center justify-between pb-4 border-b border-cosmic-700/60">
+              <h2 class="font-display font-bold text-base text-white">Pending Assignments</h2>
+              <span class="text-xs font-mono text-crimson bg-crimson/15 px-2 py-0.5 rounded border border-crimson/30">1 Urgent</span>
+            </div>
+
+            <div class="mt-4 space-y-3">
+              
+              <!-- Assignment 1: Urgent -->
+              <div class="p-3.5 rounded-xl bg-cosmic-950/70 border border-crimson/40 flex items-center justify-between">
+                <div>
+                  <div class="flex items-center space-x-2">
+                    <span class="text-[11px] font-mono text-crimson font-bold">CS-308</span>
+                    <span class="text-xs font-semibold text-white">Virtual Memory Paging Sim</span>
+                  </div>
+                  <div class="text-[11px] text-slate-400 mt-1 flex items-center space-x-2">
+                    <span class="text-crimson font-medium">Due Today • 11:59 PM</span>
+                    <span>•</span>
+                    <span>Max Marks: 25</span>
+                  </div>
+                </div>
+                <button class="px-3 py-1.5 rounded-lg bg-crimson/20 hover:bg-crimson/30 text-crimson border border-crimson/50 text-xs font-medium transition-all">
+                  Upload Code
+                </button>
+              </div>
+
+              <!-- Assignment 2 -->
+              <div class="p-3.5 rounded-xl bg-cosmic-950/70 border border-cosmic-700 flex items-center justify-between">
+                <div>
+                  <div class="flex items-center space-x-2">
+                    <span class="text-[11px] font-mono text-cyan font-bold">CS-301</span>
+                    <span class="text-xs font-semibold text-white">B+ Tree Indexing in C++</span>
+                  </div>
+                  <div class="text-[11px] text-slate-400 mt-1">Due in 2 days (10 Oct) • Max Marks: 30</div>
+                </div>
+                <button class="px-3 py-1.5 rounded-lg bg-cosmic-800 hover:bg-cosmic-700 text-slate-200 border border-cosmic-700 text-xs font-medium transition-all">
+                  Details
+                </button>
+              </div>
+
+              <!-- Assignment 3 -->
+              <div class="p-3.5 rounded-xl bg-cosmic-950/70 border border-cosmic-700 flex items-center justify-between">
+                <div>
+                  <div class="flex items-center space-x-2">
+                    <span class="text-[11px] font-mono text-violet font-bold">MA-202</span>
+                    <span class="text-xs font-semibold text-white">Graph Theory Online Quiz</span>
+                  </div>
+                  <div class="text-[11px] text-slate-400 mt-1">Due in 5 days (13 Oct) • 20 MCQs</div>
+                </div>
+                <button class="px-3 py-1.5 rounded-lg bg-cosmic-800 hover:bg-cosmic-700 text-slate-200 border border-cosmic-700 text-xs font-medium transition-all">
+                  Take Quiz
+                </button>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Fee Settlement & HoldButton Prototype (Screen STU-5) -->
+          <div class="rounded-2xl bg-gradient-to-br from-cosmic-900 to-cosmic-850 border border-amber/40 p-6 shadow-glass-card space-y-4">
+            <div class="flex items-center justify-between pb-3 border-b border-cosmic-700/60">
+              <div class="flex items-center space-x-2">
+                <span class="text-amber">💳</span>
+                <h2 class="font-display font-bold text-base text-white">Fee Account Summary</h2>
+              </div>
+              <span class="text-xs font-mono text-amber bg-amber/15 px-2 py-0.5 rounded border border-amber/30">Spring 2026</span>
+            </div>
+
+            <div class="space-y-2 text-xs">
+              <div class="flex justify-between text-slate-400">
+                <span>Tuition & Laboratory Fee:</span>
+                <span class="font-mono text-slate-200">₹ 65,000</span>
+              </div>
+              <div class="flex justify-between text-mint">
+                <span>Merit Scholarship (30% Waiver):</span>
+                <span class="font-mono">- ₹ 19,500</span>
+              </div>
+              <div class="flex justify-between text-slate-400">
+                <span>Installment I Paid (Jul 2026):</span>
+                <span class="font-mono text-slate-200">- ₹ 21,000</span>
+              </div>
+              <div class="pt-2 border-t border-cosmic-700/80 flex justify-between items-baseline">
+                <span class="text-sm font-semibold text-white">Net Balance Payable:</span>
+                <span class="text-lg font-mono font-bold text-amber">₹ 24,500</span>
+              </div>
+            </div>
+
+            <!-- HoldButton Micro-Component Visual Representation (from Section 4.7) -->
+            <div class="pt-2">
+              <div class="p-3.5 rounded-xl bg-cosmic-950 border border-amber/30 flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                  <div class="relative w-8 h-8 rounded-full border-2 border-amber/40 flex items-center justify-center text-amber">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="text-xs font-bold text-white">Hold to Pay ₹24,500</div>
+                    <div class="text-[10px] text-slate-400 font-mono">ReactBits HoldButton (1.5s press)</div>
+                  </div>
+                </div>
+                <span class="px-2.5 py-1 rounded bg-amber text-black font-semibold text-xs tracking-wide shadow-glow-amber">
+                  HOLD PAY
+                </span>
+              </div>
+              <p class="text-[10px] text-center text-slate-400 mt-2 font-mono">Instant digital receipt & GST invoice auto-generated</p>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- ===================================================================== -->
+      <!-- 6. FOOTER NOTICE & PROTOTYPE METADATA                                 -->
+      <!-- ===================================================================== -->
+      <footer class="pt-6 pb-4 border-t border-cosmic-700/50 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 gap-3">
+        <div class="flex items-center space-x-2">
+          <span class="w-2 h-2 rounded-full bg-cyan"></span>
+          <span>NEXORA Visual Prototype — Strictly adhering to <code class="font-mono text-cyan text-[11px]">frontend_spec.md</code></span>
+        </div>
+        <div class="flex items-center space-x-4 font-mono text-[11px]">
+          <span>Role: Student Dashboard</span>
+          <span>•</span>
+          <span>Tailwind CSS CDN</span>
+          <span>•</span>
+          <span>Design Tokens 1:1</span>
+        </div>
+      </footer>
+
+    </main>
+  </div>
+
+</body>
+</html>
